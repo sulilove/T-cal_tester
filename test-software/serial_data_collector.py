@@ -3668,6 +3668,7 @@ class DataCollectorApp(QMainWindow):
             self.data_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
             self.time_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
             self.datetime_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
+            self._vol_cache.clear() if hasattr(self, '_vol_cache') else None
             for i in range(self._dev_row_count):
                 unit = self.device_quantity_info.get(i, {}).get('unit', '')
                 self.legend_widget.update_temperature(i, None, unit)
@@ -3690,6 +3691,7 @@ class DataCollectorApp(QMainWindow):
         self.data_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
         self.time_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
         self.datetime_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
+        self._vol_cache.clear() if hasattr(self, '_vol_cache') else None
         # 重置起始时间
         self.start_time = time.time()
         self._reset_auto_test_state()
@@ -3796,6 +3798,22 @@ class DataCollectorApp(QMainWindow):
     def calculate_volatility(self, dev_id):
         if not self.devices[dev_id]['enabled']:
             return None
+        # 增量缓存：缓存键为 (缓冲长度, 最后一点时间戳)。
+        # 未满窗口时长度变化会触发重算；满窗口时长度恒定但末尾时间戳变化也会触发重算，
+        # 从而保证结果始终正确，同时避免同一帧内重复全量计算。
+        cache = getattr(self, '_vol_cache', None)
+        if cache is None:
+            cache = self._vol_cache = {}
+        dts = self.datetime_buffer[dev_id]
+        n = len(dts)
+        if n == 0:
+            cache[dev_id] = (0, None)
+            return None
+        key = (n, int(np.asarray(dts, dtype='datetime64[us]')[-1]))
+        c = cache.get(dev_id)
+        if c is not None and c[0] == key:
+            return c[1]
+
         now = datetime.now()
         reset_time = self.legend_widget.get_reset_time(dev_id)
         if reset_time:
@@ -3803,43 +3821,49 @@ class DataCollectorApp(QMainWindow):
         else:
             start_time = now - timedelta(minutes=30)
 
-        temps = []
-        earliest_dt = None
-        for dt, temp in zip(self.datetime_buffer[dev_id], self.data_buffer[dev_id]):
-            if dt >= start_time:
-                temps.append(temp)
-                if earliest_dt is None or dt < earliest_dt:
-                    earliest_dt = dt
-
-        if len(temps) < 2:
-            return None
-        volatility = np.std(temps)
-        min_val = np.min(temps)
-        max_val = np.max(temps)
-        avg_val = np.mean(temps)
-        if earliest_dt:
-            data_duration_min = (now - earliest_dt).total_seconds() / 60.0
+        # 用 numpy 从末尾切片取窗口内数据，避免 Python 级逐点循环
+        temps_arr = np.asarray(self.data_buffer[dev_id], dtype=float)
+        dts_arr = np.asarray(dts, dtype='datetime64[us]')
+        start_ns = np.datetime64(start_time)
+        mask = dts_arr >= start_ns
+        if not mask.any():
+            result = None
         else:
-            data_duration_min = 0
-        return volatility, data_duration_min, min_val, max_val, avg_val
+            temps = temps_arr[mask]
+            earliest_dt = dts_arr[mask][0]
+            if len(temps) < 2:
+                result = None
+            else:
+                volatility = float(np.std(temps))
+                min_val = float(np.min(temps))
+                max_val = float(np.max(temps))
+                avg_val = float(np.mean(temps))
+                if earliest_dt:
+                    data_duration_min = (now - earliest_dt.astype('O')).total_seconds() / 60.0
+                else:
+                    data_duration_min = 0
+                result = (volatility, data_duration_min, min_val, max_val, avg_val)
+        cache[dev_id] = (key, result)
+        return result
 
     def _filter_outliers_for_display(self, values):
         """将统计离群点替换为 np.nan，避免单个跳变点撑大曲线 Y 轴比例。
         原始数据仍保留在 data_buffer 中，不影响 Excel 保存和统计计算。
         使用 IQR 方法（1.5 倍 IQR 为常见阈值，这里放宽到 3 倍以减少误伤）。
+        输入为 numpy 数组，返回 numpy 数组（pyqtgraph 可直接绘制）。
         """
         n = len(values)
         if n < 10:
-            return list(values)
+            return values
         arr = np.asarray(values, dtype=float)
         q1, q3 = np.percentile(arr, [25, 75])
         iqr = q3 - q1
         if iqr <= 0:
-            return list(values)
+            return arr
         lower = q1 - 3.0 * iqr
         upper = q3 + 3.0 * iqr
         # 用 nan 代替异常点，pyqtgraph 绘制时会跳过，Y 轴自动范围也不会被撑大
-        return [v if lower <= v <= upper else np.nan for v in values]
+        return np.where((arr >= lower) & (arr <= upper), arr, np.nan)
 
     def update_plots(self):
         if not self.test_running:
@@ -3852,9 +3876,10 @@ class DataCollectorApp(QMainWindow):
                 if self.curves[i] is not None:
                     try:
                         if self.devices[i]['enabled'] and len(self.time_buffer[i]) > 0 and len(self.data_buffer[i]) > 0:
-                            times_min = [t / 60.0 for t in self.time_buffer[i]]
+                            # 用 numpy 向量化，避免每帧 Python 级列表推导
+                            times_min = np.asarray(self.time_buffer[i], dtype=float) / 60.0
                             # 过滤异常显示点，原始数据仍保留在 buffer 中
-                            plot_vals = self._filter_outliers_for_display(list(self.data_buffer[i]))
+                            plot_vals = self._filter_outliers_for_display(np.asarray(self.data_buffer[i], dtype=float))
                             self.curves[i].setData(times_min, plot_vals)
                             self.curves[i].setVisible(True)
                         else:
