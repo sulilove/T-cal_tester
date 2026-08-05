@@ -88,8 +88,8 @@
     "interval": 1000,
     "test_interval": 0.0,
     "ts_row_count": 3,
-    "temp_source_device": "Fluke 9250",
-    "stability_threshold": 0.05,
+    "temp_source_device": "Fluke 9243",
+    "stability_threshold": 0.02,
     "row_setpoints": [
         100.0,
         600.0,
@@ -138,6 +138,136 @@
             "baud": 115200,
             "ip": "",
             "lan_port": 8000
+        }
+    },
+    "temp_source_full_settings": {
+        "Fluke 9250": {
+            "row_count": 3,
+            "stability_threshold": 0.05,
+            "row_setpoints": [
+                100.0,
+                600.0,
+                1200.0
+            ],
+            "row_specs": [
+                0.5,
+                0.5,
+                0.5
+            ],
+            "row_mains": [
+                101.0,
+                591.0,
+                1193.0
+            ],
+            "row_secs": [
+                102.5,
+                591.0,
+                1188.0
+            ],
+            "row_checks": [
+                true,
+                true,
+                true
+            ],
+            "row_main_pid_p": [
+                18.0,
+                18.0,
+                9.0
+            ],
+            "row_main_pid_i": [
+                90.0,
+                90.0,
+                90.0
+            ],
+            "row_main_pid_d": [
+                5.0,
+                5.0,
+                5.0
+            ],
+            "row_sec_pid_p": [
+                40.0,
+                40.0,
+                40.0
+            ],
+            "row_sec_pid_i": [
+                720.0,
+                720.0,
+                720.0
+            ],
+            "row_sec_pid_d": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "row_weights": [
+                "0.1277,0.4,0.1303",
+                "0.253,0.8,0.253",
+                "0.27,0.835,0.243"
+            ]
+        },
+        "Fluke 9243": {
+            "row_count": 3,
+            "stability_threshold": 0.02,
+            "row_setpoints": [
+                100.0,
+                600.0,
+                1200.0
+            ],
+            "row_specs": [
+                0.5,
+                0.5,
+                0.5
+            ],
+            "row_mains": [
+                101.0,
+                591.0,
+                1193.0
+            ],
+            "row_secs": [
+                102.5,
+                591.0,
+                1188.0
+            ],
+            "row_checks": [
+                true,
+                true,
+                true
+            ],
+            "row_main_pid_p": [
+                18.0,
+                18.0,
+                9.0
+            ],
+            "row_main_pid_i": [
+                90.0,
+                90.0,
+                90.0
+            ],
+            "row_main_pid_d": [
+                5.0,
+                5.0,
+                5.0
+            ],
+            "row_sec_pid_p": [
+                40.0,
+                40.0,
+                40.0
+            ],
+            "row_sec_pid_i": [
+                720.0,
+                720.0,
+                720.0
+            ],
+            "row_sec_pid_d": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "row_weights": [
+                "0.1277,0.4,0.1303",
+                "0.253,0.8,0.253",
+                "0.27,0.835,0.243"
+            ]
         }
     },
     "temp_source_conn": "serial",
