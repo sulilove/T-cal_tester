@@ -18,6 +18,8 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
+APP_VERSION = "1.0.7"
+
 import sys
 import os
 import platform
@@ -1028,13 +1030,80 @@ class DeviceThread(QThread):
         self.wait(1000)
 
 
+# ==================== 串口下拉框（点击弹出，白底黑字） ====================
+class PortComboBox(QComboBox):
+    """串口选择下拉框：非可编辑模式，点击任意位置即刷新串口列表并弹出原生下拉菜单。
+       显式为下拉列表设置白色背景 + 黑色文字，避免默认深色/黑色主题看不清选项。
+       配置加载时若端口不在当前列表中，会加入列表首位以便显示。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(False)
+        self._apply_popup_style()
+
+    def _apply_popup_style(self):
+        """给下拉列表视图设置白色背景 + 黑色文字，保证选项清晰可见"""
+        self.setStyleSheet("""
+            QComboBox {
+                background-color: #ffffff; color: #000000;
+                border: 1px solid #cccccc; border-radius: 3px; padding: 2px 5px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff; color: #000000;
+                selection-background-color: #2196F3; selection-color: #ffffff;
+                border: 1px solid #cccccc; outline: 0;
+            }
+            QComboBox::drop-down { border: none; width: 18px; }
+        """)
+        view = self.view()
+        if view is not None:
+            view.setStyleSheet(
+                "QListView { background-color: #ffffff; color: #000000; "
+                "selection-background-color: #2196F3; selection-color: #ffffff; }"
+            )
+
+    def _get_ports(self):
+        """获取系统当前可用串口列表"""
+        if not SERIAL_AVAILABLE:
+            return []
+        try:
+            return [p.device for p in serial.tools.list_ports.comports()]
+        except Exception:
+            return []
+
+    def _refresh_and_show(self):
+        """刷新串口列表（保留当前选中值），再弹出原生下拉菜单"""
+        current = self.currentText()
+        port_list = self._get_ports()
+        old_block = self.blockSignals(True)
+        try:
+            self.clear()
+            self.addItems(port_list if port_list else [''])
+            if current:
+                idx = self.findText(current)
+                if idx >= 0:
+                    self.setCurrentIndex(idx)
+                elif not self.isEditable():
+                    # 非可编辑模式：把当前端口加到列表首位以便显示
+                    self.insertItem(0, current)
+                    self.setCurrentIndex(0)
+                else:
+                    self.setCurrentText(current)
+        finally:
+            self.blockSignals(old_block)
+        self.showPopup()
+
+    def mousePressEvent(self, event):
+        # 点击任意位置（含编辑区/箭头）都刷新串口列表并弹出原生下拉菜单
+        self._refresh_and_show()
+
+
 # ==================== 温度查询线程 ====================
 class TemperatureQueryThread(QThread):
     """后台查询温度源 Main/Sec 温度，不阻塞主线程
 
     支持:
-      - Fluke 9250: SOUR:SENS:DATA? TEMP1 / TEMP2
-      - Fluke 9243: MEASure:TEMPerature? 2 / 3（第2、第3个逗号分隔值）
+      - Fluke 9250 / Fluke 9243: SOUR:SENS:DATA? TEMP1 / TEMP2
     """
     temp1_ready = pyqtSignal(float)
     temp2_ready = pyqtSignal(float)
@@ -1060,10 +1129,9 @@ class TemperatureQueryThread(QThread):
         return None
 
     def run(self):
-        is_9243 = (self.device_type == 'Fluke 9243')
-        cmd1 = "MEASure:TEMPerature? 2\r\n" if is_9243 else "SOUR:SENS:DATA? TEMP1\r\n"
-        cmd2 = "MEASure:TEMPerature? 3\r\n" if is_9243 else "SOUR:SENS:DATA? TEMP2\r\n"
-        label = "9243" if is_9243 else "9250"
+        cmd1 = "SOUR:SENS:DATA? TEMP1\r\n"
+        cmd2 = "SOUR:SENS:DATA? TEMP2\r\n"
+        label = self.device_type
         print(f"[TempQuery {label}] 线程已启动，命令1={cmd1!r}, 命令2={cmd2!r}")
 
         while self.running:
@@ -1245,7 +1313,7 @@ class DragDropRowWidget(QWidget):
 class DataCollectorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("多设备数据采集系统 (串口/LAN - 多物理量多Y轴)")
+        self.setWindowTitle(f"T-cal_tester v{APP_VERSION}")
         self.config_file = 'serial_collector_config.json'
 
         self.devices = [
@@ -1673,6 +1741,11 @@ class DataCollectorApp(QMainWindow):
             send_btn = QPushButton("发送")
             send_btn.setFixedWidth(46)
             send_btn.setToolTip("发送该行的所有参数到温度源")
+            send_btn.setStyleSheet(
+                "QPushButton{background:#2196F3;color:white;font-weight:bold;font-size:11px;border-radius:4px;padding:0px;}"
+                "QPushButton:hover{background:#1976D2;}"
+                "QPushButton:disabled{background:#ccc;color:#888;}"
+            )
             send_btn.clicked.connect(lambda _, btn=send_btn: self._send_row_command(self.row_send_btns.index(btn)))
             row_layout.addWidget(send_btn)
             self.row_send_btns.append(send_btn)
@@ -1778,8 +1851,7 @@ class DataCollectorApp(QMainWindow):
         ctrl_row.addWidget(self.temp_source_conn_combo)
 
         # Serial 参数
-        self.temp_source_port_combo = QComboBox()
-        self.temp_source_port_combo.setEditable(True)
+        self.temp_source_port_combo = PortComboBox()
         self.temp_source_port_combo.setMinimumWidth(70)
         self.temp_source_port_combo.currentTextChanged.connect(lambda v: self.save_config())
         ctrl_row.addWidget(self.temp_source_port_combo)
@@ -2383,17 +2455,25 @@ class DataCollectorApp(QMainWindow):
             current = self.temp_source_port_combo.currentText()
             self.temp_source_port_combo.clear()
             self.temp_source_port_combo.addItems(port_list if port_list else [''])
-            if current and current in port_list:
-                self.temp_source_port_combo.setCurrentText(current)
-            elif current:
-                self.temp_source_port_combo.setCurrentText(current)
+            if current:
+                idx = self.temp_source_port_combo.findText(current)
+                if idx >= 0:
+                    self.temp_source_port_combo.setCurrentIndex(idx)
+                else:
+                    # 非可编辑模式 setCurrentText 失效，把端口加到列表首位
+                    if not self.temp_source_port_combo.isEditable():
+                        self.temp_source_port_combo.insertItem(0, current)
+                        self.temp_source_port_combo.setCurrentIndex(0)
+                    else:
+                        self.temp_source_port_combo.setCurrentText(current)
             self.status_label.setText(f"检测到串口: {', '.join(port_list) if port_list else '无'}")
         else:
             self.status_label.setText("串口功能不可用，请安装pyserial库")
 
     @staticmethod
     def _populate_port_combo(combo, desired_port=''):
-        """向 QComboBox 填入系统实际可用串口列表，并尝试选中 desired_port"""
+        """向 QComboBox 填入系统实际可用串口列表，并尝试选中 desired_port
+           非可编辑模式下：若 desired_port 不在列表中，也加入列表首位以便显示"""
         combo.clear()
         port_list = []
         if SERIAL_AVAILABLE:
@@ -2408,7 +2488,12 @@ class DataCollectorApp(QMainWindow):
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             else:
-                combo.setCurrentText(desired_port)
+                # 非可编辑模式 setCurrentText 失效，把端口加到列表首位
+                if not combo.isEditable() and desired_port:
+                    combo.insertItem(0, desired_port)
+                    combo.setCurrentIndex(0)
+                else:
+                    combo.setCurrentText(desired_port)
 
     def _find_tc_main_device(self):
         """查找 TC_Main_20mm-SIC 设备，返回 (port, baudrate)
@@ -2619,11 +2704,16 @@ class DataCollectorApp(QMainWindow):
         self.temp_source_conn_combo.setCurrentText(pref_conn)
         settings = self._ts_device_settings.get(device_type, {})
         if 'port' in settings:
-            idx = self.temp_source_port_combo.findText(settings['port'])
+            port_text = settings['port']
+            idx = self.temp_source_port_combo.findText(port_text)
             if idx >= 0:
                 self.temp_source_port_combo.setCurrentIndex(idx)
             else:
-                self.temp_source_port_combo.setCurrentText(settings['port'])
+                if not self.temp_source_port_combo.isEditable() and port_text:
+                    self.temp_source_port_combo.insertItem(0, port_text)
+                    self.temp_source_port_combo.setCurrentIndex(0)
+                else:
+                    self.temp_source_port_combo.setCurrentText(port_text)
         if 'baud' in settings:
             self.temp_source_baud_spin.setValue(settings['baud'])
         if 'ip' in settings:
@@ -2673,8 +2763,7 @@ class DataCollectorApp(QMainWindow):
                     return
                 if self._ts_device_type == 'Const 1210':
                     return
-                is_9243 = self._ts_device_type == 'Fluke 9243'
-                cmd = "MEASure:TEMPerature? 2\r\n" if is_9243 else "SOUR:SENS:DATA? TEMP1\r\n"
+                cmd = "SOUR:SENS:DATA? TEMP1\r\n"
                 try:
                     resp = self.temp_source_manager.send_command(cmd, timeout=1.0)
                     print(f"[TS diag] {cmd!r} -> {resp!r}")
@@ -4354,10 +4443,9 @@ class DataCollectorApp(QMainWindow):
         row_layout.addWidget(name_edit, 1)
         w['name'] = name_edit
 
-        # 串口 / IP 地址 双层切换：串口显示QComboBox(可编辑+实际COM列表)，LAN显示QLineEdit
+        # 串口 / IP 地址 双层切换：串口显示 PortComboBox（点击弹对话框），LAN显示QLineEdit
         port_ip_stack = QStackedWidget()
-        port_combo = QComboBox()
-        port_combo.setEditable(True)
+        port_combo = PortComboBox()
         port_combo.setMinimumWidth(70)
         ip_edit = QLineEdit()
         ip_edit.setPlaceholderText("IP地址")
@@ -4498,6 +4586,11 @@ class DataCollectorApp(QMainWindow):
         send_btn = QPushButton("发送")
         send_btn.setFixedWidth(46)
         send_btn.setToolTip("发送该行的所有参数到温度源")
+        send_btn.setStyleSheet(
+            "QPushButton{background:#2196F3;color:white;font-weight:bold;font-size:11px;border-radius:4px;padding:0px;}"
+            "QPushButton:hover{background:#1976D2;}"
+            "QPushButton:disabled{background:#ccc;color:#888;}"
+        )
         # 点击时按当前列表位置解析行号，保证拖动排序后仍对应正确行
         send_btn.clicked.connect(lambda _, btn=send_btn: self._send_row_command(self.row_send_btns.index(btn)))
         row_layout.addWidget(send_btn)
@@ -5018,7 +5111,11 @@ class DataCollectorApp(QMainWindow):
                     if idx >= 0:
                         self.temp_source_port_combo.setCurrentIndex(idx)
                     else:
-                        self.temp_source_port_combo.setCurrentText(port_text)
+                        if not self.temp_source_port_combo.isEditable() and port_text:
+                            self.temp_source_port_combo.insertItem(0, port_text)
+                            self.temp_source_port_combo.setCurrentIndex(0)
+                        else:
+                            self.temp_source_port_combo.setCurrentText(port_text)
                 if 'temp_source_baud' in cfg:
                     self.temp_source_baud_spin.setValue(cfg['temp_source_baud'])
                 if 'temp_source_ip' in cfg:
@@ -5072,11 +5169,16 @@ class DataCollectorApp(QMainWindow):
                 # 应用后，把当前设备的连接参数也重新落回 UI（_apply_ts_settings 不改连接参数）
                 cur_conn = self._ts_device_settings.get(self._ts_device_type, {})
                 if 'port' in cur_conn:
-                    idx = self.temp_source_port_combo.findText(cur_conn['port'])
+                    port_text = cur_conn['port']
+                    idx = self.temp_source_port_combo.findText(port_text)
                     if idx >= 0:
                         self.temp_source_port_combo.setCurrentIndex(idx)
                     else:
-                        self.temp_source_port_combo.setCurrentText(cur_conn['port'])
+                        if not self.temp_source_port_combo.isEditable() and port_text:
+                            self.temp_source_port_combo.insertItem(0, port_text)
+                            self.temp_source_port_combo.setCurrentIndex(0)
+                        else:
+                            self.temp_source_port_combo.setCurrentText(port_text)
                 if 'baud' in cur_conn:
                     self.temp_source_baud_spin.setValue(cur_conn['baud'])
                 if 'ip' in cur_conn:
