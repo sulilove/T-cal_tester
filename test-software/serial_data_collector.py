@@ -1030,35 +1030,68 @@ class DeviceThread(QThread):
 
 # ==================== 温度查询线程 ====================
 class TemperatureQueryThread(QThread):
-    """后台查询温度源 Main/Sec 温度，不阻塞主线程"""
+    """后台查询温度源 Main/Sec 温度，不阻塞主线程
+
+    支持:
+      - Fluke 9250: SOUR:SENS:DATA? TEMP1 / TEMP2
+      - Fluke 9243: MEASure:TEMPerature? 2 / 3（第2、第3个逗号分隔值）
+    """
     temp1_ready = pyqtSignal(float)
     temp2_ready = pyqtSignal(float)
 
-    def __init__(self, manager):
+    def __init__(self, manager, device_type='Fluke 9250'):
         super().__init__()
         self.manager = manager
+        self.device_type = device_type
         self.running = True
 
+    def _parse_first_number(self, resp):
+        """从响应中提取第一个数字，支持 +25.5 / +25.5,status / a,b,c 等格式"""
+        if not resp:
+            return None
+        # 逗号分隔时先取段
+        for part in resp.split(','):
+            m = re.search(r'[+-]?\d+\.?\d*', part)
+            if m:
+                try:
+                    return float(m.group())
+                except ValueError:
+                    pass
+        return None
+
     def run(self):
+        is_9243 = (self.device_type == 'Fluke 9243')
+        cmd1 = "MEASure:TEMPerature? 2\r\n" if is_9243 else "SOUR:SENS:DATA? TEMP1\r\n"
+        cmd2 = "MEASure:TEMPerature? 3\r\n" if is_9243 else "SOUR:SENS:DATA? TEMP2\r\n"
+        label = "9243" if is_9243 else "9250"
+        print(f"[TempQuery {label}] 线程已启动，命令1={cmd1!r}, 命令2={cmd2!r}")
+
         while self.running:
             try:
-                resp = self.manager.send_command("SOUR:SENS:DATA? TEMP1\r\n", timeout=1.0)
-                if resp:
-                    temp = float(resp.strip().split()[0])
+                resp = self.manager.send_command(cmd1, timeout=1.0)
+                print(f"[TempQuery {label}] cmd1 resp: {resp!r}")
+                temp = self._parse_first_number(resp)
+                if temp is not None:
                     self.temp1_ready.emit(temp)
-            except:
-                pass
+            except Exception as e:
+                print(f"[TempQuery {label}] cmd1 error: {e}")
+
             try:
-                resp = self.manager.send_command("SOUR:SENS:DATA? TEMP2\r\n", timeout=1.0)
-                if resp:
-                    temp = float(resp.strip().split()[0])
+                resp = self.manager.send_command(cmd2, timeout=1.0)
+                print(f"[TempQuery {label}] cmd2 resp: {resp!r}")
+                temp = self._parse_first_number(resp)
+                if temp is not None:
                     self.temp2_ready.emit(temp)
-            except:
-                pass
-            for _ in range(50):  # 约5秒
+            except Exception as e:
+                print(f"[TempQuery {label}] cmd2 error: {e}")
+
+            # 约5秒刷新一次
+            for _ in range(50):
                 if not self.running:
                     break
                 time.sleep(0.1)
+
+        print(f"[TempQuery {label}] 线程已停止")
 
     def stop(self):
         self.running = False
@@ -1568,6 +1601,7 @@ class DataCollectorApp(QMainWindow):
         self.row_setpoint_spec = []   # 每行的 Spec（到达T0的允许偏差）
         self.row_main_spins = []
         self.row_sec_spins = []
+        self.row_send_btns = []       # 每行的“发送命令”按钮
         self.row_checks = []          # 每行的勾选框
         self._ts_row_layouts = []
         # 每行的 Main PID 参数
@@ -1634,6 +1668,14 @@ class DataCollectorApp(QMainWindow):
             chk.stateChanged.connect(lambda v, idx=row_idx: self.save_config())
             row_layout.addWidget(chk)
             self.row_checks.append(chk)
+
+            # 发送命令按钮：放在最左侧（勾选框之后），点击后发送该行的所有参数
+            send_btn = QPushButton("发送")
+            send_btn.setFixedWidth(46)
+            send_btn.setToolTip("发送该行的所有参数到温度源")
+            send_btn.clicked.connect(lambda _, btn=send_btn: self._send_row_command(self.row_send_btns.index(btn)))
+            row_layout.addWidget(send_btn)
+            self.row_send_btns.append(send_btn)
 
             # Setpoint（设定温度）：标签与输入框组合为一个整体
             sp = make_spin(0, 25, 0.01, 2, 70)
@@ -2417,20 +2459,26 @@ class DataCollectorApp(QMainWindow):
             if response:
                 try:
                     raw = response.strip()
-                    # Const 1210 返回逗号分隔多值，Fluke 返回空格分隔
-                    if ',' in raw:
-                        read_val = float(raw.split(',')[0])
-                    else:
-                        read_val = float(raw.split()[0])
-                    print(f"  → 解析值={read_val}, 期望值={exp_val_f}")
-                    # 匹配: 设备可能返回缩放值(x100) 或实际°C值
-                    if abs(read_val - exp_val_f) < 0.01:
-                        print(f"  → 直接匹配成功 (|{read_val}-{exp_val_f}|={abs(read_val-exp_val_f):.6f})")
+                    # 设备返回可能含非数字前缀/单位，如 'Pm 0 Tm 33.0002 R 112.8344'
+                    # 提取响应中所有浮点数字，逐个与期望值比较（直接匹配或 /100 缩放）
+                    tokens = re.findall(r'-?\d+\.?\d*', raw)
+                    matched = False
+                    for tk in tokens:
+                        try:
+                            read_val = float(tk)
+                        except ValueError:
+                            continue
+                        if abs(read_val - exp_val_f) < 0.01:
+                            print(f"  → 直接匹配成功 (token={read_val}, 期望={exp_val_f})")
+                            matched = True
+                            break
+                        if abs(read_val / 100.0 - exp_val_f) < 0.01:
+                            print(f"  → /100匹配成功 (token={read_val}, 期望={exp_val_f})")
+                            matched = True
+                            break
+                    if matched:
                         return True
-                    if abs(read_val / 100.0 - exp_val_f) < 0.01:
-                        print(f"  → /100匹配成功 (|{read_val}-{exp_val_f*100}|/100={abs(read_val/100.0-exp_val_f):.6f})")
-                        return True
-                    print(f"  → 都不匹配: |{read_val}-{exp_val_f}|={abs(read_val-exp_val_f):.6f}, |{read_val/100.0}-{exp_val_f}|={abs(read_val/100.0-exp_val_f):.6f}")
+                    print(f"  → 均不匹配: 响应数字={tokens}, 期望={exp_val_f}")
                 except (ValueError, IndexError) as e:
                     print(f"  → 解析异常: {e}")
                     read_val = None
@@ -2610,12 +2658,38 @@ class DataCollectorApp(QMainWindow):
             return SharedSerialManager(port, baudrate)
 
     def _open_temp_source_port(self):
-        """打开温度源连接（按钮回调），根据回读状态动态设置启动/停止按钮"""
+        """打开温度源连接（按钮回调），连接后立刻开始读取 Main/Sec 读数并更新启停按钮"""
         if self._open_temp_source_serial():
-            # 打开后查询实际输出状态，动态切换启停按钮
+            # 连接成功后立即启动后台读数线程（不依赖"启动控制"），开始读取 Main/Sec
+            self._update_serial_button_state(True)
+            # 查询实际输出状态，仅用于动态切换启停按钮外观
             # Fluke 9250: OUTP:STAT? / Const 1210: TEMPerature:STATus?
             self._update_temp_source_ui_state()
-            self.status_label.setText("温度源连接已打开")
+            self.status_label.setText("温度源连接已打开，开始读取 Main/Sec")
+
+            # 主动诊断一次 Main 读数，立即在状态栏反馈命令/响应是否正确
+            def _diagnostic_main_read():
+                if not self.temp_source_connected or self.temp_source_manager is None:
+                    return
+                if self._ts_device_type == 'Const 1210':
+                    return
+                is_9243 = self._ts_device_type == 'Fluke 9243'
+                cmd = "MEASure:TEMPerature? 2\r\n" if is_9243 else "SOUR:SENS:DATA? TEMP1\r\n"
+                try:
+                    resp = self.temp_source_manager.send_command(cmd, timeout=1.0)
+                    print(f"[TS diag] {cmd!r} -> {resp!r}")
+                    if resp:
+                        m = re.search(r'[+-]?\d+\.?\d*', resp)
+                        if m:
+                            val = float(m.group())
+                            self.status_label.setText(f"温度源 Main 读数: {val:.2f}°C，开始后台轮询")
+                        else:
+                            self.status_label.setText(f"温度源响应无法解析: {resp!r}")
+                    else:
+                        self.status_label.setText("温度源无读数返回，请确认设备类型和命令是否正确")
+                except Exception as e:
+                    self.status_label.setText(f"温度源诊断读数异常: {e}")
+            QTimer.singleShot(600, _diagnostic_main_read)
 
     def _close_temp_source_port(self):
         """关闭温度源串口（按钮回调）"""
@@ -2653,7 +2727,7 @@ class DataCollectorApp(QMainWindow):
                 self.ts_sec_temp_label.setText("Sec:--°C")
                 # 启动后台温度查询线程（不阻塞主线程、不争抢设备线程串口锁）
                 if self.ts_query_thread is None and self.temp_source_manager is not None:
-                    self.ts_query_thread = TemperatureQueryThread(self.temp_source_manager)
+                    self.ts_query_thread = TemperatureQueryThread(self.temp_source_manager, device_type=self._ts_device_type)
                     self.ts_query_thread.temp1_ready.connect(lambda t: self.ts_main_temp_label.setText(f"Main:{t:.2f}°C"))
                     self.ts_query_thread.temp2_ready.connect(lambda t: self.ts_sec_temp_label.setText(f"Sec:{t:.2f}°C"))
                     self.ts_query_thread.start()
@@ -2797,6 +2871,92 @@ class DataCollectorApp(QMainWindow):
         self.status_label.setText("PID/Weight 参数全部设置验证通过")
         return True
 
+    def _ensure_temp_source_open(self):
+        """确保温度源连接已打开（与 temp_source_start 一致），返回是否成功。"""
+        is_const1210 = (self._ts_device_type == 'Const 1210')
+        if not is_const1210 and not SERIAL_AVAILABLE:
+            QMessageBox.warning(self, "错误", "串口库不可用")
+            return False
+        if self.temp_source_manager is None:
+            if not self._open_temp_source_serial():
+                return False
+        return True
+
+    def _send_row_command(self, row_idx):
+        """发送指定行的所有参数到温度源：SP、Main、Sec、PID、Weight 并启动输出。
+           支持 Const 1210 与 Fluke 9250。"""
+        if row_idx < 0 or row_idx >= self._ts_row_count:
+            return
+        if not self.row_checks[row_idx].isChecked():
+            self.status_label.setText(f"行{row_idx+1} 未勾选，已跳过发送")
+            return
+
+        if not self._ensure_temp_source_open():
+            return
+
+        sp = self.row_setpoint_spins[row_idx].value()
+        main_val = self.row_main_spins[row_idx].value()
+        sec_val = self.row_sec_spins[row_idx].value()
+        is_const1210 = (self._ts_device_type == 'Const 1210')
+
+        if is_const1210:
+            self.status_label.setText(f"行{row_idx+1}: SP={sp}°C - 发送温度...")
+            QApplication.processEvents()
+            ok = self._send_and_verify_cmd(
+                set_cmd=f"TEMPerature:STATus:CONTrol {sp},1001\r\n",
+                query_cmd="TEMPerature:TARGet?\r\n",
+                expected_value=sp,
+                label=f"行{row_idx+1} Const 1210"
+            )
+            if ok:
+                self._update_ts_btn(True)
+                self.status_label.setText(f"行{row_idx+1} 命令已发送 (SP={sp}°C)")
+            else:
+                self.status_label.setText(f"行{row_idx+1} 命令发送失败")
+            return
+
+        # ---- Fluke 9250 ----
+        self.status_label.setText(f"行{row_idx+1}: 发送 PID 参数...")
+        QApplication.processEvents()
+        if not self._send_pid_params(row_idx):
+            self.status_label.setText(f"行{row_idx+1} PID 参数发送失败")
+            return
+
+        self.status_label.setText(f"行{row_idx+1}: 设置温度={sp}°C, Main={main_val}, Sec={sec_val}...")
+        QApplication.processEvents()
+        ok = self._send_and_verify_cmd(
+            set_cmd=f"SOUR:MAIN:SPO {main_val}\r\n",
+            query_cmd="SOUR:MAIN:SPO?\r\n",
+            expected_value=main_val,
+            label=f"行{row_idx+1} Main"
+        )
+        if not ok:
+            self.status_label.setText(f"行{row_idx+1} Main 发送失败")
+            return
+
+        ok = self._send_and_verify_cmd(
+            set_cmd=f"SOUR:SEC:SPO {sec_val}\r\n",
+            query_cmd="SOUR:SEC:SPO?\r\n",
+            expected_value=sec_val,
+            label=f"行{row_idx+1} Sec"
+        )
+        if not ok:
+            self.status_label.setText(f"行{row_idx+1} Sec 发送失败")
+            return
+
+        ok = self._send_and_verify_cmd(
+            set_cmd=b"OUTP:STAT 1\r\n",
+            query_cmd=b"OUTP:STAT?\r\n",
+            expected_value=1,
+            label=f"行{row_idx+1} 启动"
+        )
+        if not ok:
+            self.status_label.setText(f"行{row_idx+1} 启动失败")
+            return
+
+        self._update_temp_source_ui_state()
+        self.status_label.setText(f"行{row_idx+1} 命令已发送 (SP={sp}°C, M={main_val}, S={sec_val})")
+
     def temp_source_start(self):
         """启动温度源输出：先发送并验证 PID 参数，再发送 OUTP:STAT 1
            Const 1210: 跳过 PID，直接使用预留的控制命令"""
@@ -2908,6 +3068,9 @@ class DataCollectorApp(QMainWindow):
             self.has_unsaved_data = False
             self.stop_collection()
 
+        # 顺序测试结束，关闭 setpoint 命名标志（必须在 stop_collection 之后）
+        self._seq_naming_setpoint = False
+
         self._update_sched_btn()
         self.sched_time_edit.setEnabled(True)
         self._update_ts_btn(False)
@@ -2935,6 +3098,8 @@ class DataCollectorApp(QMainWindow):
         self.sequential_running = True
         self.sequential_current_row = 0
         self.sequential_test_complete = False
+        # 顺序测试文件名采用 setpoint 温度（非实时值）
+        self._seq_naming_setpoint = True
 
         # 切换按钮状态
         self._update_ts_btn(True)
@@ -3184,10 +3349,9 @@ class DataCollectorApp(QMainWindow):
                 if bg_thread and bg_thread.is_alive():
                     bg_thread.join(timeout=10)
 
-                # 1) 先保存数据（含avg1/avg2记录）和截图
+                # 1) 先保存数据（含avg1/avg2记录）
                 self.has_unsaved_data = True
                 self.auto_save_data()
-                self.save_current_plot(auto_save=True)
                 self.has_unsaved_data = False
                 self._sequential_saving = False
 
@@ -3231,6 +3395,8 @@ class DataCollectorApp(QMainWindow):
                 self._reset_auto_test_state()
                 self.legend_widget.clear_auto_test()
                 self.status_label.setText(f"行{row+1}采集完成，温度源已停止")
+                # 行采集完成：截取整窗截图（命名为 setpoint-时间，保存到 test data）
+                self._save_whole_window_screenshot('stop')
             except Exception as e:
                 # 任何异常都要确保温度源关闭，但不中断顺序测试
                 import traceback
@@ -3282,6 +3448,32 @@ class DataCollectorApp(QMainWindow):
             self._update_sched_btn()
             self.sched_time_edit.setEnabled(True)
 
+    def get_filename_temp_str(self):
+        """文件名用的温度字符串。
+
+        - 顺序测试模式：使用 setpoint 温度（current_test_temp），保留一位小数。
+        - 普通采集：取第一个启用且有数据的通道的实时温度值，保留一位小数。
+        """
+        if getattr(self, '_seq_naming_setpoint', False):
+            try:
+                return f"{float(self.current_test_temp):.1f}"
+            except (TypeError, ValueError):
+                return 'NA'
+        first_temp = None
+        for i in range(self._dev_row_count):
+            if not self.devices[i]['enabled']:
+                continue
+            buf = self.data_buffer.get(i) if hasattr(self, 'data_buffer') else None
+            if buf:
+                first_temp = buf[-1]
+                break
+        if first_temp is None:
+            return 'NA'
+        try:
+            return f"{float(first_temp):.1f}"
+        except (TypeError, ValueError):
+            return 'NA'
+
     def start_collection(self, temp=None):
         enabled = [d for d in self.devices if d['enabled']]
         if not enabled:
@@ -3291,7 +3483,33 @@ class DataCollectorApp(QMainWindow):
         if temp is not None:
             self.current_test_temp = temp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.current_data_file = f"{self.current_test_temp:g}°C-{timestamp}.xlsx" if self.sequential_running else f"temp-{timestamp}.xlsx"
+        # 文件名温度：第一个通道实时值（保留一位小数），采集开始尚无数据时回退到当前测试温度
+        temp_str = self.get_filename_temp_str()
+        if temp_str == 'NA':
+            try:
+                temp_str = f"{float(self.current_test_temp):.1f}"
+            except (TypeError, ValueError):
+                temp_str = 'NA'
+        base_name = f"{temp_str}-{timestamp}.xlsx"
+        # 保存到 test data 文件夹（与记录数据同一目录）
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        save_dir = os.path.join(script_dir, "test data")
+        os.makedirs(save_dir, exist_ok=True)
+        self.current_data_file = os.path.join(save_dir, base_name)
+        # 一开始采集就立即生成 Excel 文件（含空 sheet 结构）
+        try:
+            from openpyxl import Workbook
+            book = Workbook()
+            if 'Sheet' in book.sheetnames:
+                del book['Sheet']
+            book.create_sheet('实时数据')
+            book.create_sheet('通道检测')
+            book.save(self.current_data_file)
+            print(f"[start_collection] 已创建 Excel: {self.current_data_file}")
+        except Exception as e:
+            print(f"[start_collection] 创建 Excel 失败: {e}")
+        # 标记采集文件尚未用“第一个通道实时值”重命名（首个数据点到达后再重命名）
+        self._data_file_renamed = False
         self.data_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
         self.time_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
         self.datetime_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
@@ -3332,6 +3550,23 @@ class DataCollectorApp(QMainWindow):
         self._save_tick_count = 0
         self.save_timer.start(5000)
 
+    def _save_whole_window_screenshot(self, suffix):
+        """截取整个软件窗口并保存到 test data 文件夹。
+        文件名：{温度}-{suffix}-{时间}.png
+        温度策略：顺序测试用 setpoint，否则第一个通道实时值（均保留一位小数）。
+        """
+        try:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            temp_str = self.get_filename_temp_str()
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            save_dir = os.path.join(script_dir, "test data")
+            os.makedirs(save_dir, exist_ok=True)
+            img_path = os.path.join(save_dir, f"{temp_str}-{suffix}-{ts}.png")
+            self.grab().save(img_path, 'PNG')
+            print(f"[screenshot] 已保存整窗截图: {img_path}")
+        except Exception as e:
+            print(f"[screenshot] 截图失败: {e}")
+
     def stop_collection(self):
         self.test_running = False
         self.save_timer.stop()
@@ -3351,8 +3586,8 @@ class DataCollectorApp(QMainWindow):
             has_data = any(len(self.data_buffer[i]) > 0 for i in range(self._dev_row_count))
             if has_data:
                 self.auto_save_data()
-        # 停止采集后自动保存曲线截图
-        self.save_current_plot(auto_save=True)
+        # 停止采集后截取整个软件窗口（文件名温度策略：顺序测试用 setpoint，否则第一个通道实时值）
+        self._save_whole_window_screenshot('stop')
         # 如果温度源控制仍在使用，需立即重连共享串口
         if self.sequential_running:
             port, baudrate = self._find_tc_main_device()
@@ -3591,12 +3826,17 @@ class DataCollectorApp(QMainWindow):
                     if self.devices[i]['enabled'] and self.data_buffer[i]:
                         temp_val = self.data_buffer[i][-1]
                         break
-            temp_str = f"{temp_val}" if temp_val is not None else "NA"
-            temp_str = ''.join(c for c in str(temp_str) if c.isalnum() or c in '.-')  # 文件名安全
+            # 文件名温度统一策略：第一个通道实时值，保留一位小数
+            temp_str = self.get_filename_temp_str()
 
-            # 自动保存到开始采集的 Excel 文件（不弹框）
-            path = os.path.abspath(self.current_data_file)
-            dir_path = os.path.dirname(path)
+            # 记录数据单独保存为一个 Excel 文件，文件名格式：温度-record-时间
+            # 统一保存到脚本所在目录下的 “test data” 文件夹
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            dir_path = os.path.join(script_dir, "test data")
+            os.makedirs(dir_path, exist_ok=True)
+            record_base = f"{temp_str}-record-{ts}"
+            path = os.path.join(dir_path, f"{record_base}.xlsx")
+            img_path = os.path.join(dir_path, f"{record_base}.png")
 
             # 收集各启用通道当前实时数据
             rows = []
@@ -3625,34 +3865,33 @@ class DataCollectorApp(QMainWindow):
                 QMessageBox.warning(self, "警告", "没有启用的通道或尚无数据")
                 return
 
-            # 截图实时数据显示窗口
-            img_path = os.path.join(dir_path, f"{temp_str}record{ts}.png")
+            # 截图整个软件主窗口（文件：温度-record-时间.png）
+            img_ok = False
             try:
-                self.legend_widget.grab().save(img_path)
-                img_ok = True
-            except Exception:
+                pixmap = self.grab()
+                pixmap.save(img_path, 'PNG')
+                img_ok = os.path.exists(img_path)
+            except Exception as e:
                 img_ok = False
+                print(f"[record_current_data] 截图失败: {e}")
 
-            # 写入 Excel 新 sheet（开始采集的同一文件）
-            sheet_name = '实时数据记录'
+            # 写入独立的 Excel 文件（新文件，不依赖采集 Excel）
+            from openpyxl import Workbook
+            book = Workbook()
+            if 'Sheet' in book.sheetnames:
+                del book['Sheet']
+            ws = book.create_sheet('实时数据记录')
             headers = ['通道', '设备名称', '实时值(°C)', '波动', 'Min', 'Max', 'Avg', '记录时间']
-            if os.path.exists(path):
-                book = load_workbook(path)
-            else:
-                book = Workbook()
-                if 'Sheet' in book.sheetnames:
-                    del book['Sheet']
-            if sheet_name in book.sheetnames:
-                del book[sheet_name]
-            ws = book.create_sheet(sheet_name)
             ws.append(headers)
             for r in rows:
                 ws.append(r)
             book.save(path)
 
-            msg = f"记录已保存至：{path}\n（新建 sheet：{sheet_name}）"
+            msg = f"记录已保存至：{path}"
             if img_ok:
                 msg += f"\n截图已保存：{img_path}"
+            else:
+                msg += "\n（截图未生成）"
             QMessageBox.information(self, "成功", msg)
             self.status_label.setText(f"记录数据已保存: {path}")
         except Exception as e:
@@ -3766,6 +4005,32 @@ class DataCollectorApp(QMainWindow):
             s.setText(msg)
             s.setStyleSheet("color:red;font-weight:bold;")
 
+    def _rename_collection_file_if_needed(self, temp):
+        """首个启用通道收到第一个实时数据点时，用其温度值重命名采集 Excel 文件。"""
+        if getattr(self, '_data_file_renamed', True):
+            return
+        if not self.current_data_file or not os.path.exists(self.current_data_file):
+            return
+        try:
+            temp_str = f"{float(temp):.1f}"
+        except (TypeError, ValueError):
+            return
+        # 仅当文件名仍为回退默认温度时才重命名（避免覆盖真实命名）
+        old_path = self.current_data_file
+        dir_path = os.path.dirname(old_path)
+        ts = os.path.basename(old_path).split('-', 1)[1] if '-' in os.path.basename(old_path) else datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
+        new_path = os.path.join(dir_path, f"{temp_str}-{ts}")
+        if new_path == old_path:
+            self._data_file_renamed = True
+            return
+        try:
+            os.replace(old_path, new_path)
+            self.current_data_file = new_path
+            self._data_file_renamed = True
+            print(f"[rename] 采集文件已重命名为: {new_path}")
+        except Exception as e:
+            print(f"[rename] 重命名失败: {e}")
+
     def on_data_received(self, data, dev_id):
         if not self.test_running:
             return
@@ -3777,6 +4042,14 @@ class DataCollectorApp(QMainWindow):
             self.time_buffer[dev_id].append(t)
             self.datetime_buffer[dev_id].append(dt)
             self._plot_dirty = True
+
+            # 第一个启用通道收到首个实时数据点时，用其温度重命名采集文件
+            # （顺序测试使用 setpoint 命名，不做实时值重命名）
+            first_enabled = next((i for i in range(self._dev_row_count) if self.devices[i]['enabled']), None)
+            if (first_enabled is not None and dev_id == first_enabled
+                    and not getattr(self, '_seq_naming_setpoint', False)
+                    and not getattr(self, '_data_file_renamed', True)):
+                self._rename_collection_file_if_needed(temp)
 
             unit = self.device_quantity_info.get(dev_id, {}).get('unit', '')
             self.legend_widget.update_temperature(dev_id, temp, unit)
@@ -3809,23 +4082,31 @@ class DataCollectorApp(QMainWindow):
         if n == 0:
             cache[dev_id] = (0, None)
             return None
-        key = (n, int(np.asarray(dts, dtype='datetime64[us]')[-1]))
+        key = (n, int(np.asarray(dts, dtype='datetime64[us]')[-1].astype('int64')))
         c = cache.get(dev_id)
         if c is not None and c[0] == key:
             return c[1]
 
         now = datetime.now()
-        reset_time = self.legend_widget.get_reset_time(dev_id)
-        if reset_time:
-            start_time = max(reset_time, now - timedelta(minutes=30))
+        # 非 Stability 通道：对全部已采集数据实时统计（不限 30min 窗口，也不受 reset 影响）
+        is_stability = bool(self.devices[dev_id].get('auto_test', False))
+        if is_stability:
+            reset_time = self.legend_widget.get_reset_time(dev_id)
+            if reset_time:
+                start_time = max(reset_time, now - timedelta(minutes=30))
+            else:
+                start_time = now - timedelta(minutes=30)
         else:
-            start_time = now - timedelta(minutes=30)
+            start_time = None  # 全量统计
 
         # 用 numpy 从末尾切片取窗口内数据，避免 Python 级逐点循环
         temps_arr = np.asarray(self.data_buffer[dev_id], dtype=float)
         dts_arr = np.asarray(dts, dtype='datetime64[us]')
-        start_ns = np.datetime64(start_time)
-        mask = dts_arr >= start_ns
+        if start_time is None:
+            mask = np.ones(len(dts_arr), dtype=bool)
+        else:
+            start_ns = np.datetime64(start_time)
+            mask = dts_arr >= start_ns
         if not mask.any():
             result = None
         else:
@@ -4213,6 +4494,15 @@ class DataCollectorApp(QMainWindow):
         row_layout.addWidget(chk)
         self.row_checks.append(chk)
 
+        # 发送命令按钮：放在最左侧（勾选框之后），点击后发送该行的所有参数
+        send_btn = QPushButton("发送")
+        send_btn.setFixedWidth(46)
+        send_btn.setToolTip("发送该行的所有参数到温度源")
+        # 点击时按当前列表位置解析行号，保证拖动排序后仍对应正确行
+        send_btn.clicked.connect(lambda _, btn=send_btn: self._send_row_command(self.row_send_btns.index(btn)))
+        row_layout.addWidget(send_btn)
+        self.row_send_btns.append(send_btn)
+
         row_layout.addWidget(QLabel("SP"))
         sp = mk_spin(0, 25, 1, 1, 70)
         sp.valueChanged.connect(lambda v, idx=row_idx: self._on_row_setpoint_changed(idx, v))
@@ -4328,6 +4618,8 @@ class DataCollectorApp(QMainWindow):
             self.row_main_spins.pop()
         if self.row_sec_spins:
             self.row_sec_spins.pop()
+        if self.row_send_btns:
+            self.row_send_btns.pop()
         if self.row_main_pid_p:
             self.row_main_pid_p.pop()
         if self.row_main_pid_i:
@@ -4375,8 +4667,8 @@ class DataCollectorApp(QMainWindow):
         for lst in [self.row_checks, self.row_setpoint_spins, self.row_setpoint_spec,
                     self.row_main_spins, self.row_sec_spins, self.row_main_pid_p,
                     self.row_main_pid_d, self.row_sec_pid_p, self.row_sec_pid_i,
-                    self.row_sec_pid_d, self.row_weights, self._ts_row_layouts,
-                    self._ts_row_advanced_widgets]:
+                    self.row_sec_pid_d, self.row_weights, self.row_send_btns,
+                    self._ts_row_layouts, self._ts_row_advanced_widgets]:
             move_item(lst, src_idx, tgt_idx)
 
         # 重建布局：按新顺序排列
