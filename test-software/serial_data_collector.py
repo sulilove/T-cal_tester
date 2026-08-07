@@ -18,7 +18,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 
 import sys
 import os
@@ -49,9 +49,12 @@ except ImportError:
     print("请运行: pip install pyserial")
     SERIAL_AVAILABLE = False
 
-# 设置中文字体
+# 设置中文字体（按平台选择系统中已安装的字体，避免 Qt 启动时反复匹配缺失字体）
 if os.name == 'nt':
     font_family = "Microsoft YaHei"
+elif sys.platform == 'darwin':
+    # macOS 原生中文字体，避免 "WenQuanYi Micro Hei" 缺失导致的启动开销与警告
+    font_family = "PingFang SC"
 else:
     font_family = "WenQuanYi Micro Hei"
 
@@ -1586,16 +1589,17 @@ class DataCollectorApp(QMainWindow):
         self.collect_btn.clicked.connect(self._toggle_collection)
         right_btn_layout.addWidget(self.collect_btn)
         right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
+        self._update_collect_btn()
+
         self.record_btn = make_button("记录数据", "#E91E63", self.record_current_data, enabled=False)
         right_btn_layout.addWidget(self.record_btn)
         right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-        self._update_collect_btn()
 
-        self.clear_btn = make_button("清空缓存", "#FF9800", self.clear_cached_data)
-        right_btn_layout.addWidget(self.clear_btn)
+        self.reset_stats_btn = make_button("重置统计", "#FF9800", self.reset_stats_all)
+        right_btn_layout.addWidget(self.reset_stats_btn)
         right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
 
-        self.reset_plot_btn = make_button("重置图像", "#795548", self.reset_plot)
+        self.reset_plot_btn = make_button("重置图像", "#795548", self.reset_curve_display)
         right_btn_layout.addWidget(self.reset_plot_btn)
         right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
 
@@ -2034,7 +2038,8 @@ class DataCollectorApp(QMainWindow):
             self._set_btn_style(self.collect_btn, "开始采集", "#4CAF50")
         self.collect_btn.setEnabled(True)
         # 记录数据按钮：仅在采集进行中可用
-        self.record_btn.setEnabled(self.test_running)
+        if hasattr(self, 'record_btn'):
+            self.record_btn.setEnabled(self.test_running)
 
     def _update_serial_btn(self, connected):
         """根据串口连接状态更新串口按钮"""
@@ -3900,25 +3905,17 @@ class DataCollectorApp(QMainWindow):
             QMessageBox.critical(self, "错误", f"保存失败：{str(e)}")
 
     def record_current_data(self):
-        """记录当前实时数据窗口中各启用通道的实时值/波动/Min/Max/Avg 到开始采集的 Excel 新 sheet，并截图"""
+        """记录当前实时数据窗口中各启用通道的实时值/波动/Min/Max/Avg 到独立 Excel 文件，并截图"""
         try:
-            from openpyxl import Workbook, load_workbook
+            from openpyxl import Workbook
             if not self.test_running or not self.current_data_file:
                 QMessageBox.warning(self, "警告", "请先开始采集后再记录数据")
                 return
             now = datetime.now()
             ts = now.strftime("%Y%m%d_%H%M%S")
-            # 当前温度（用于截图文件名）
-            temp_val = getattr(self, 'current_test_temp', None)
-            if temp_val is None or temp_val == '' or (isinstance(temp_val, str) and temp_val.strip() == ''):
-                for i in range(self._dev_row_count):
-                    if self.devices[i]['enabled'] and self.data_buffer[i]:
-                        temp_val = self.data_buffer[i][-1]
-                        break
-            # 文件名温度统一策略：第一个通道实时值，保留一位小数
+            # 文件名温度统一策略：第一个启用通道实时值，保留一位小数
             temp_str = self.get_filename_temp_str()
 
-            # 记录数据单独保存为一个 Excel 文件，文件名格式：温度-record-时间
             # 统一保存到脚本所在目录下的 “test data” 文件夹
             script_dir = os.path.dirname(os.path.abspath(__file__))
             dir_path = os.path.join(script_dir, "test data")
@@ -3965,7 +3962,6 @@ class DataCollectorApp(QMainWindow):
                 print(f"[record_current_data] 截图失败: {e}")
 
             # 写入独立的 Excel 文件（新文件，不依赖采集 Excel）
-            from openpyxl import Workbook
             book = Workbook()
             if 'Sheet' in book.sheetnames:
                 del book['Sheet']
@@ -3986,61 +3982,37 @@ class DataCollectorApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"记录失败：{str(e)}")
 
-    def clear_cached_data(self):
-        if self.test_running:
-            QMessageBox.warning(self, "警告", "采集进行中，请先停止采集后再清空缓存")
-            return
-        reply = QMessageBox.question(self, "确认清空", "确定要清空所有未保存的缓存数据吗？\n此操作不可撤销！",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            self.data_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
-            self.time_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
-            self.datetime_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
-            self._vol_cache.clear() if hasattr(self, '_vol_cache') else None
-            for i in range(self._dev_row_count):
-                unit = self.device_quantity_info.get(i, {}).get('unit', '')
-                self.legend_widget.update_temperature(i, None, unit)
-                self.legend_widget.update_volatility(i, None, unit=unit)
-                self.legend_widget.update_stats(i, unit=unit)
-                if self.curves[i] is not None:
-                    try:
-                        self.curves[i].setData([], [])
-                    except RuntimeError:
-                        self.curves[i] = None
-            self.has_unsaved_data = False
-            self.save_btn.setEnabled(False)
-            self.current_data_file = None
-            self.status_label.setText("缓存数据已清空")
-            QMessageBox.information(self, "成功", "缓存数据已清空")
-
-    def reset_plot(self):
-        """重置图像：清空图表和数据缓冲区，从0开始重新绘制"""
-        # 清空数据缓冲区
-        self.data_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
-        self.time_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
-        self.datetime_buffer = {i: deque(maxlen=self.max_points) for i in range(self._dev_row_count)}
-        self._vol_cache.clear() if hasattr(self, '_vol_cache') else None
-        # 重置起始时间
-        self.start_time = time.time()
-        self._reset_auto_test_state()
-        self.legend_widget.clear_auto_test()
-        # 清空图例数值
+    def reset_stats_all(self):
+        """重置统计：将所有启用通道的波动/Min/Max/Avg 统计清零（不影响曲线显示与数据记录）"""
         for i in range(self._dev_row_count):
+            if not self.devices[i]['enabled']:
+                continue
+            self.legend_widget.reset_volatility(i)
             unit = self.device_quantity_info.get(i, {}).get('unit', '')
-            self.legend_widget.update_temperature(i, None, unit)
-            self.legend_widget.update_volatility(i, None, unit=unit)
             self.legend_widget.update_stats(i, unit=unit)
-        # 重建图表
-        if self.test_running:
-            self.setup_multi_axis_plot()
-        else:
-            for i in range(self._dev_row_count):
-                if self.curves[i] is not None:
-                    try:
-                        self.curves[i].setData([], [])
-                    except RuntimeError:
-                        self.curves[i] = None
-        self.status_label.setText("图像已重置，从0开始重新绘制")
+        self.status_label.setText("统计（波动/Min/Max/Avg）已重置")
+
+    def reset_curve_display(self):
+        """重置图像：仅清空实时曲线的显示并重设视图，不影响数据缓冲区、统计与后续数据记录"""
+        # 仅清除曲线显示数据，保留 data_buffer / time_buffer / datetime_buffer / _vol_cache / current_data_file
+        for i in range(self._dev_row_count):
+            if self.curves[i] is not None:
+                try:
+                    self.curves[i].setData([], [])
+                except RuntimeError:
+                    self.curves[i] = None
+        # 恢复自动跟随视图（X 轴显示全部数据，Y 轴自动缩放）
+        self._auto_follow = True
+        if hasattr(self, 'primary_plot') and self.primary_plot is not None:
+            self._suppress_range_signal = True
+            self.primary_plot.vb.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+            self.primary_plot.vb.enableAutoRange(axis=pg.ViewBox.XAxis, enable=False)
+            for vb in getattr(self, 'extra_vb_list', []):
+                vb.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+            self._suppress_range_signal = False
+        # 强制下一帧从已有缓冲区重新绘制曲线
+        self._plot_dirty = True
+        self.status_label.setText("图像已重置（仅刷新显示，不影响数据与记录）")
 
     def _reset_plot_view(self):
         """重置图形缩放视图，恢复自动缩放显示全部数据"""
