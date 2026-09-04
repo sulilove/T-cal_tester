@@ -18,7 +18,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 
 import sys
 import os
@@ -1652,19 +1652,7 @@ class DataCollectorApp(QMainWindow):
                 s.setSuffix(suffix)
             return s
 
-        def make_labeled(label_text, widget):
-            """标签在框外、紧贴输入框、无底色，形成紧凑单元（如 SP 25.0）"""
-            g = QWidget()
-            h = QHBoxLayout(g)
-            h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(0)
-            lbl = QLabel(label_text)
-            lbl.setStyleSheet("QLabel{color:#333333;margin:0px;padding:0px;}")
-            h.addWidget(lbl)
-            if isinstance(widget, QDoubleSpinBox):
-                widget.setStyleSheet((widget.styleSheet() or "") + "QDoubleSpinBox{padding-left:0px;}")
-            h.addWidget(widget)
-            return g
+        make_labeled = self._make_labeled
 
         for row_idx in range(3):
             ts_container = DragDropRowWidget(row_idx)
@@ -1971,6 +1959,22 @@ class DataCollectorApp(QMainWindow):
         self.axial_plus_btn.setStyleSheet(
             "QPushButton{background:#4CAF50;color:white;font-weight:bold;border-radius:4px;font-size:13px;}")
         axial_input_row.addWidget(self.axial_plus_btn)
+        # 径向模式示意图（+/-按钮右侧，仅径向模式显示）
+        self.radial_diagram_label = QLabel()
+        _radial_img = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radial_schematic.png")
+        if os.path.exists(_radial_img):
+            pix = QPixmap(_radial_img)
+            if not pix.isNull():
+                self.radial_diagram_label.setPixmap(
+                    pix.scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation))
+        self.radial_diagram_label.setFixedSize(82, 82)
+        self.radial_diagram_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.radial_diagram_label.setStyleSheet(
+            "QLabel{background:#ffffff;border:1px solid #dddddd;border-radius:4px;}")
+        self.radial_diagram_label.setVisible(False)  # 轴向模式默认隐藏
+        axial_input_row.addWidget(self.radial_diagram_label)
+        axial_input_row.addSpacing(6)
         axial_layout.addLayout(axial_input_row)
         axial_layout.setAlignment(axial_input_row, Qt.AlignmentFlag.AlignLeft)
 
@@ -2035,7 +2039,7 @@ class DataCollectorApp(QMainWindow):
         blank.setFlags(blank.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.axial_table.setItem(0, 0, blank)
         for r, label in enumerate(["F-avg", "M-avg"], start=1):
-            it = QTableWidgetItem(label)
+            it = QTableWidgetItem(self._favg_label(label) if label == "F-avg" else label)
             it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
             it.setBackground(QColor("#f0f0f0"))
             it.setForeground(QColor("#333333"))
@@ -2299,7 +2303,7 @@ class DataCollectorApp(QMainWindow):
             return
         from openpyxl import load_workbook
         sheet_name = 'radial' if self.axial_mode == 'radial' else 'axis'
-        data = {'指标': ['F-avg', 'M-avg']}
+        data = {'指标': [self._favg_label('F-avg'), 'M-avg']}
         for c in self.axial_columns:
             mode = c.get('mode', self.axial_mode)
             item0 = self.axial_table.item(0, c['col'])
@@ -4726,6 +4730,27 @@ class DataCollectorApp(QMainWindow):
             self.axial_table.setItem(0, 0, blank)
         self.axial_table.blockSignals(False)
 
+    def _favg_label(self, base="F-avg"):
+        """行标签：径向模式下 F-avg 显示为 F-avg(C)，轴向模式保持原样"""
+        if getattr(self, 'axial_mode', 'axial') == 'radial':
+            return f"{base}(C)"
+        return base
+
+    def _refresh_axial_row_labels(self):
+        """刷新表格第0列的行标签（切换轴向/径向模式后同步）"""
+        if not hasattr(self, 'axial_table'):
+            return
+        for r, base in enumerate(["F-avg", "M-avg"], start=1):
+            label = self._favg_label(base) if base == "F-avg" else base
+            it = self.axial_table.item(r, 0)
+            if it is None:
+                it = QTableWidgetItem()
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                it.setBackground(QColor("#f0f0f0"))
+                it.setForeground(QColor("#333333"))
+                self.axial_table.setItem(r, 0, it)
+            it.setText(label)
+
     def _axial_on_mode_changed(self, idx):
         """QComboBox 切换轴向/径向模式：清空现有数据并按新模式重新填充默认列"""
         new_mode = 'radial' if idx == 1 else 'axial'
@@ -4735,6 +4760,11 @@ class DataCollectorApp(QMainWindow):
         # 更新列0 标题
         if hasattr(self, 'axial_col0_header'):
             self.axial_col0_header.setText("位置" if new_mode == 'radial' else "高度")
+        # 同步行标签（径向模式 F-avg -> F-avg(C)）
+        self._refresh_axial_row_labels()
+        # 径向模式显示示意图，轴向模式隐藏
+        if hasattr(self, 'radial_diagram_label'):
+            self.radial_diagram_label.setVisible(new_mode == 'radial')
         # 同步开始按钮文字（未在采集中时）
         if hasattr(self, 'axial_start_btn') and not self.test_running:
             mode_cn = "径向" if new_mode == 'radial' else "轴向"
@@ -4857,7 +4887,7 @@ class DataCollectorApp(QMainWindow):
             mode_tag = 'radial' if self.axial_mode == 'radial' else 'axial'
             filename = f"{mode_tag}-{timestamp}.xlsx"
             filepath = os.path.join(save_dir, filename)
-            data = {'指标': ['F-avg', 'M-avg']}
+            data = {'指标': [self._favg_label('F-avg'), 'M-avg']}
             for c in self.axial_columns:
                 mode = c.get('mode', self.axial_mode)
                 # 从单元格读取最新 key
@@ -4900,7 +4930,7 @@ class DataCollectorApp(QMainWindow):
         sheet_name = 'radial' if self.axial_mode == 'radial' else 'axis'
         try:
             from openpyxl import load_workbook
-            data = {'指标': ['F-avg', 'M-avg']}
+            data = {'指标': [self._favg_label('F-avg'), 'M-avg']}
             for c in self.axial_columns:
                 mode = c.get('mode', self.axial_mode)
                 item0 = self.axial_table.item(0, c['col'])
@@ -5451,6 +5481,23 @@ class DataCollectorApp(QMainWindow):
             if hasattr(self, 'legend_widget'):
                 self.legend_widget.set_device_visible(i, self.devices[i]['enabled'])
 
+    def _make_labeled(self, label_text, widget):
+        """"标签+输入框"组合单元（前3行与新增行共用，保证各行列完全对齐）。
+        标签在框外、紧贴输入框、无底色，形成紧凑单元（如 SP 25.0）"""
+        g = QWidget()
+        h = QHBoxLayout(g)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(3)
+        lbl = QLabel(label_text)
+        # 最小宽度=文本实际宽度，避免行宽不足时标签被压缩导致文字重叠
+        lbl.setMinimumWidth(lbl.fontMetrics().horizontalAdvance(label_text) + 2)
+        lbl.setStyleSheet("QLabel{color:#333333;margin:0px;padding:0px;}")
+        h.addWidget(lbl)
+        if isinstance(widget, QDoubleSpinBox):
+            widget.setStyleSheet((widget.styleSheet() or "") + "QDoubleSpinBox{padding-left:3px;}")
+        h.addWidget(widget)
+        return g
+
     def _ts_add_row(self):
         """温度源增加一行设置（单行紧凑布局）"""
         if self._ts_row_count >= 10:
@@ -5483,7 +5530,7 @@ class DataCollectorApp(QMainWindow):
         ts_container = DragDropRowWidget(row_idx)
         ts_container.reorder_requested.connect(self._ts_reorder_rows)
         row_layout = QHBoxLayout(ts_container.contentWidget())
-        row_layout.setSpacing(2)
+        row_layout.setSpacing(3)  # 与前3行一致
         row_layout.setContentsMargins(1, 0, 1, 0)
 
         chk = QCheckBox()
@@ -5507,64 +5554,66 @@ class DataCollectorApp(QMainWindow):
         row_layout.addWidget(send_btn)
         self.row_send_btns.append(send_btn)
 
-        row_layout.addWidget(QLabel("SP"))
+        # 与前3行完全相同的"标签+输入框"组合容器，保证各列垂直对齐
         sp = mk_spin(0, 25, 1, 1, 70, nullable=True)  # 新行留空，使用默认值
         sp.valueChanged.connect(lambda v, idx=row_idx: self._on_row_setpoint_changed(idx, v))
-        row_layout.addWidget(sp)
+        row_layout.addWidget(self._make_labeled("SP", sp))
         self.row_setpoint_spins.append(sp)
 
-        row_layout.addWidget(QLabel("Spec"))
         spec = mk_spin(0, 0.5, 0.1, 2, 55, nullable=True)  # 新行留空，使用默认值
         spec.valueChanged.connect(lambda v, idx=row_idx: self._on_row_spec_changed(idx, v))
-        row_layout.addWidget(spec)
+        row_layout.addWidget(self._make_labeled("Spec", spec))
         self.row_setpoint_spec.append(spec)
 
-        row_layout.addWidget(QLabel("M"))
+        # 高级控件（Const 1210 时隐藏），与前3行一致：从 M 开始收集
+        advanced = []
+
         main_spin = mk_spin(0, 50, 0.01, 2, 55, nullable=True)  # 新行留空，使用默认值
         main_spin.valueChanged.connect(lambda v, idx=row_idx: self._on_row_main_changed(idx, v))
-        row_layout.addWidget(main_spin)
+        g = self._make_labeled("M", main_spin)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_main_spins.append(main_spin)
 
-        row_layout.addWidget(QLabel("M-P"))
         mp = mk_spin(0, 10, 0.1, 1, 55, nullable=True)
         mp.valueChanged.connect(lambda v: self.save_config())
-        row_layout.addWidget(mp)
+        g = self._make_labeled("M-P", mp)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_main_pid_p.append(mp)
 
-        row_layout.addWidget(QLabel("M-I"))
         mi = mk_spin(0, 200, 1, 1, 55, nullable=True)
         mi.valueChanged.connect(lambda v: self.save_config())
-        row_layout.addWidget(mi)
+        g = self._make_labeled("M-I", mi)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_main_pid_i.append(mi)
 
-        row_layout.addWidget(QLabel("M-D"))
         md = mk_spin(0, 50, 1, 1, 55, nullable=True)
         md.valueChanged.connect(lambda v: self.save_config())
-        row_layout.addWidget(md)
+        g = self._make_labeled("M-D", md)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_main_pid_d.append(md)
 
-        row_layout.addWidget(QLabel("S"))
         sec_spin = mk_spin(0, 0, 1, 1, 55, nullable=True)  # 新行留空，使用默认值
         sec_spin.valueChanged.connect(lambda v, idx=row_idx: self._on_row_sec_changed(idx, v))
-        row_layout.addWidget(sec_spin)
+        g = self._make_labeled("S", sec_spin)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_sec_spins.append(sec_spin)
 
-        row_layout.addWidget(QLabel("S-P"))
         sp_p = mk_spin(0, 10, 0.1, 1, 55, nullable=True)
         sp_p.valueChanged.connect(lambda v: self.save_config())
-        row_layout.addWidget(sp_p)
+        g = self._make_labeled("S-P", sp_p)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_sec_pid_p.append(sp_p)
 
-        row_layout.addWidget(QLabel("S-I"))
         si = mk_spin(0, 200, 1, 1, 55, nullable=True)
         si.valueChanged.connect(lambda v: self.save_config())
-        row_layout.addWidget(si)
+        g = self._make_labeled("S-I", si)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_sec_pid_i.append(si)
 
-        row_layout.addWidget(QLabel("S-D"))
         sd = mk_spin(0, 50, 1, 1, 55, nullable=True)
         sd.valueChanged.connect(lambda v: self.save_config())
-        row_layout.addWidget(sd)
+        g = self._make_labeled("S-D", sd)
+        row_layout.addWidget(g); advanced.append(g)
         self.row_sec_pid_d.append(sd)
 
         # Weight：已取消显示，保留空列表维持索引对齐（数据不再通过 UI 输入）
@@ -5572,12 +5621,7 @@ class DataCollectorApp(QMainWindow):
 
         row_layout.addStretch()  # 输入框靠左，不拉伸到右侧
 
-        # 收集该行的"高级控件"（Const 1210 时需要隐藏，从 index 5 开始"
-        advanced = []
-        for idx in range(5, row_layout.count()):
-            item = row_layout.itemAt(idx)
-            if item and item.widget():
-                advanced.append(item.widget())
+        # advanced 已在上方显式收集（Const 1210 时需要隐藏）
         self._ts_row_advanced_widgets.append(advanced)
 
         # 插入到自动测试框的 SP 行布局末尾
