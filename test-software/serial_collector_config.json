@@ -3,92 +3,74 @@
         {
             "enabled": true,
             "connection": "serial",
-            "port": "COM9",
-            "baudrate": "38400",
-            "name": "Fix0",
-            "read_command": "FETC? (@1)\\r\\n",
+            "port": "/dev/cu.Bluetooth-Incoming-Port",
+            "baudrate": "9600",
+            "name": "设备1",
+            "read_command": "",
             "host": "",
             "lan_port": "",
             "auto_test": false,
-            "curve_visible": true,
-            "read_interval": 1.0
+            "curve_visible": true
         },
         {
             "enabled": true,
             "connection": "serial",
-            "port": "COM9",
-            "baudrate": "38400",
-            "name": "MOV20",
-            "read_command": "FETC? (@2)\\r\\n",
+            "port": "/dev/cu.Bluetooth-Incoming-Port",
+            "baudrate": "9600",
+            "name": "设备2",
+            "read_command": "",
             "host": "",
             "lan_port": "",
             "auto_test": false,
-            "curve_visible": true,
-            "read_interval": 1.0
+            "curve_visible": true
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "/dev/cu.debug-console",
+            "baudrate": "9600",
+            "name": "设备3",
+            "read_command": "",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "curve_visible": true
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "/dev/cu.debug-console",
+            "baudrate": "9600",
+            "name": "设备4",
+            "read_command": "",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "curve_visible": true
         },
         {
             "enabled": false,
             "connection": "serial",
-            "port": "COM12",
+            "port": "/dev/cu.debug-console",
             "baudrate": "8000",
-            "name": "Const",
-            "read_command": "MEASure:TEMPerature?",
+            "name": "ConST1210 CH1",
+            "read_command": "MEASure:TEMPerature?\r\n",
             "host": "",
             "lan_port": "",
             "auto_test": false,
-            "curve_visible": true,
-            "read_interval": 1.0
+            "curve_visible": true
         },
         {
             "enabled": false,
-            "connection": "serial",
-            "port": "COM5",
-            "baudrate": "115200",
-            "name": "TC_Main_20mm-SIC",
-            "read_command": "SOUR:SENS:DATA? TEMP1\\r\\n",
-            "host": "",
-            "lan_port": "",
+            "connection": "lan",
+            "port": "",
+            "baudrate": "",
+            "name": "ConST1210 CH3",
+            "read_command": "MEASure:TEMPerature?\r\n",
+            "host": "192.168.0.182",
+            "lan_port": "8000",
             "auto_test": false,
-            "curve_visible": true,
-            "read_interval": 1.0
-        },
-        {
-            "enabled": false,
-            "connection": "serial",
-            "port": "COM5",
-            "baudrate": "115200",
-            "name": "TC_Ref_100mm-SIC",
-            "read_command": "SOUR:SENS:DATA? TEMP2\\r\\n",
-            "host": "",
-            "lan_port": "",
-            "auto_test": false,
-            "curve_visible": true,
-            "read_interval": 1.0
-        },
-        {
-            "enabled": false,
-            "connection": "serial",
-            "port": "COM5",
-            "baudrate": "115200",
-            "name": "Duty main",
-            "read_command": "OUTP:DATA? MAIN\\r\\n",
-            "host": "",
-            "lan_port": "",
-            "auto_test": false,
-            "curve_visible": true,
-            "read_interval": 1.0
-        },
-        {
-            "enabled": false,
-            "connection": "serial",
-            "port": "COM5",
-            "baudrate": "115200",
-            "name": "Duty sec",
-            "read_command": "OUTP:DATA? SEC\\r\\n",
-            "host": "",
-            "lan_port": "",
-            "auto_test": false,
-            "read_interval": 1.0
+            "curve_visible": true
         }
     ],
     "interval": 1000,
@@ -97,9 +79,9 @@
     "temp_source_device": "Fluke 9250",
     "stability_threshold": 0.05,
     "row_setpoints": [
-        100.0,
-        600.0,
-        1200.0
+        25.0,
+        25.0,
+        25.0
     ],
     "row_specs": [
         0.5,
@@ -107,23 +89,23 @@
         0.5
     ],
     "row_mains": [
-        101.0,
-        591.0,
-        1193.0
+        50.0,
+        50.0,
+        50.0
     ],
     "row_secs": [
-        102.5,
-        591.0,
-        1188.0
+        0.0,
+        0.0,
+        0.0
     ],
     "row_checks": [
         true,
-        false,
-        false
+        true,
+        true
     ],
     "temp_source_conn_prefs": {
         "Fluke 9250": "serial",
-        "Const 1210": "lan",
+        "Const 1210": "lan"
     },
     "temp_source_device_settings": {
         "Fluke 9250": {
@@ -144,9 +126,9 @@
             "row_count": 3,
             "stability_threshold": 0.05,
             "row_setpoints": [
-                100.0,
-                600.0,
-                1200.0
+                25.0,
+                25.0,
+                25.0
             ],
             "row_specs": [
                 0.5,
@@ -154,19 +136,19 @@
                 0.5
             ],
             "row_mains": [
-                101.0,
-                591.0,
-                1193.0
+                50.0,
+                50.0,
+                50.0
             ],
             "row_secs": [
-                102.5,
-                591.0,
-                1188.0
+                0.0,
+                0.0,
+                0.0
             ],
             "row_checks": [
                 true,
-                false,
-                false
+                true,
+                true
             ],
             "row_main_pid_p": [
                 10.0,
