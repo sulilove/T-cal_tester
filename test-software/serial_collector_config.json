@@ -10,6 +10,7 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
+            "curve_visible": true,
             "read_interval": 1.0
         },
         {
@@ -22,6 +23,7 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
+            "curve_visible": true,
             "read_interval": 1.0
         },
         {
@@ -34,6 +36,7 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
+            "curve_visible": true,
             "read_interval": 1.0
         },
         {
@@ -46,6 +49,7 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
+            "curve_visible": true,
             "read_interval": 1.0
         },
         {
@@ -58,6 +62,7 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
+            "curve_visible": true,
             "read_interval": 1.0
         },
         {
@@ -70,6 +75,7 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
+            "curve_visible": true,
             "read_interval": 1.0
         },
         {
@@ -88,8 +94,8 @@
     "interval": 1000,
     "test_interval": 0.0,
     "ts_row_count": 3,
-    "temp_source_device": "Fluke 9243",
-    "stability_threshold": 0.01,
+    "temp_source_device": "Fluke 9250",
+    "stability_threshold": 0.05,
     "row_setpoints": [
         100.0,
         600.0,
@@ -117,18 +123,11 @@
     ],
     "temp_source_conn_prefs": {
         "Fluke 9250": "serial",
-        "Fluke 9243": "serial",
-        "Const 1210": "lan"
+        "Const 1210": "lan",
     },
     "temp_source_device_settings": {
         "Fluke 9250": {
             "port": "/dev/cu.debug-console",
-            "baud": 115200,
-            "ip": "",
-            "lan_port": 8000
-        },
-        "Fluke 9243": {
-            "port": "COM9",
             "baud": 115200,
             "ip": "",
             "lan_port": 8000
@@ -200,78 +199,14 @@
                 50.0
             ],
             "row_weights": [
-                ",,",
-                ",,",
-                ",,"
-            ]
-        },
-        "Fluke 9243": {
-            "row_count": 3,
-            "stability_threshold": 0.01,
-            "row_setpoints": [
-                100.0,
-                600.0,
-                1200.0
-            ],
-            "row_specs": [
-                0.5,
-                0.5,
-                0.5
-            ],
-            "row_mains": [
-                101.0,
-                591.0,
-                1193.0
-            ],
-            "row_secs": [
-                102.5,
-                591.0,
-                1188.0
-            ],
-            "row_checks": [
-                true,
-                false,
-                false
-            ],
-            "row_main_pid_p": [
-                10.0,
-                10.0,
-                10.0
-            ],
-            "row_main_pid_i": [
-                200.0,
-                200.0,
-                200.0
-            ],
-            "row_main_pid_d": [
-                50.0,
-                50.0,
-                50.0
-            ],
-            "row_sec_pid_p": [
-                10.0,
-                10.0,
-                10.0
-            ],
-            "row_sec_pid_i": [
-                200.0,
-                200.0,
-                200.0
-            ],
-            "row_sec_pid_d": [
-                50.0,
-                50.0,
-                50.0
-            ],
-            "row_weights": [
-                ",,",
-                ",,",
-                ",,"
+                "",
+                "",
+                ""
             ]
         }
     },
     "temp_source_conn": "serial",
-    "temp_source_port": "COM9",
+    "temp_source_port": "/dev/cu.debug-console",
     "temp_source_baud": 115200,
     "temp_source_ip": "",
     "temp_source_lan_port": 8000,
@@ -306,8 +241,9 @@
         50.0
     ],
     "row_weights": [
-        ",,",
-        ",,",
-        ",,"
-    ]
+        "",
+        "",
+        ""
+    ],
+    "manual_check_t3": true
 }
