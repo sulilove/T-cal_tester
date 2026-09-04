@@ -18,7 +18,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 import sys
 import os
@@ -67,411 +67,225 @@ pg.setConfigOption('antialias', True)
 class CustomLegendWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 使用 objectName 选择器，避免 QWidget 选择器的 padding 级联到
+        # 内部 QTableWidget / QHeaderView，导致表头与数据列错位
+        self.setObjectName("legendWidget")
         self.setStyleSheet("""
-            QWidget {
+            #legendWidget {
                 background-color: rgba(255, 255, 255, 0.95);
                 border-radius: 5px;
-                padding: 5px;
             }
         """)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4)
         self.main_layout.setSpacing(2)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.device_items = {}
+
+        # 表格：通道名称 | 当前值 | Max | Min | Avg | Std | T0 | T1 | T2 | T3
+        self.table = QTableWidget(0, 10)
+        self.table.setHorizontalHeaderLabels(["通道名称", "当前值", "Max", "Min", "Avg", "Std", "T0", "T1", "T2", "T3"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # 通道名称列(0)固定较宽，其余数据列平均分布（等比拉伸）
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 200)
+        for c in range(1, 10):
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+        # 表头与数据行等高，且每个表头文字水平居中，与数据单元格一致
+        header.setFixedHeight(34)
+        header.setMinimumSectionSize(30)
+        header.setStyleSheet(
+            "QHeaderView::section{background:#f0f0f0;border:1px solid #dddddd;"
+            "font-size:11px;font-weight:bold;padding:0px 2px;}")
+        for c in range(10):
+            hi = self.table.horizontalHeaderItem(c)
+            if hi is not None:
+                hi.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table.setStyleSheet(
+            "QTableWidget{background:#ffffff;border:1px solid #dddddd;border-radius:4px;"
+            "gridline-color:#eeeeee;font-size:11px;}"
+            "QTableWidget::item{padding:0px;}")
+        self.table.setRowHeight(0, 34)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.main_layout.addWidget(self.table, 1)
+
+        self.device_items = {}        # device_id -> (name_lbl, color, reset_btn, row)
         self.device_colors = {}
-        self.device_containers = {}  # device_id -> container QWidget
+        self.device_containers = {}   # device_id -> row (用于显示/隐藏)
+        self.device_units = {}        # device_id -> unit 单位
         self.volatility_reset_times = {}
         # 记录每次批量重置后的avg和variance
         self.post_reset_records = {}  # device_id -> {'avg': val, 'var': val, 'recorded': bool}
 
     def add_device(self, device_id, device_name, color, unit='°C', auto_test=False):
         if device_id in self.device_items:
-            _, name_label, temp_label, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
-            name_label.setText(device_name)
+            r = self.device_items[device_id][3]
             self.device_colors[device_id] = color
+            if unit:
+                self.device_units[device_id] = unit
+            self._set_name_cell(r, device_name, color)
             return
 
-        v_layout = QVBoxLayout()
-        v_layout.setContentsMargins(3, 3, 3, 3)
-        v_layout.setSpacing(2)
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setRowHeight(row, 36)
 
-        name_row = QHBoxLayout()
-        name_row.setContentsMargins(0, 0, 0, 0)
-        name_row.setSpacing(6)
-
-        color_widget = QWidget()
-        color_widget.setStyleSheet(f"background-color: {color}; border-radius: 3px;")
-        color_widget.setFixedSize(12, 12)
-        name_row.addWidget(color_widget)
-
+        # 通道名称列：色点 + 名称 + 重置按钮（cellWidget）
+        name_cell = QWidget()
+        name_layout = QHBoxLayout(name_cell)
+        name_layout.setContentsMargins(4, 2, 4, 2)
+        name_layout.setSpacing(4)
+        color_lbl = QLabel()
+        color_lbl.setFixedSize(12, 12)
+        color_lbl.setStyleSheet(f"background-color: {color}; border-radius: 3px;")
+        name_layout.addWidget(color_lbl)
         name_label = QLabel(device_name)
-        name_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: "{font_family}";
-                font-size: 12px;
-                font-weight: bold;
-                color: #333333;
-            }}
-        """)
+        name_label.setObjectName("nameLabel")
+        name_label.setStyleSheet(
+            f'font-family:"{font_family}";font-size:13px;font-weight:bold;color:#333333;')
         name_label.setWordWrap(True)
-        name_row.addWidget(name_label)
-        name_row.addStretch()
-
-        data_row = QHBoxLayout()
-        data_row.setContentsMargins(12, 0, 4, 0)
-        data_row.setSpacing(8)
-
-        initial_text = f"-- {unit}" if unit else "--"
-        temp_label = QLabel(initial_text)
-        temp_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: "{font_family}";
-                font-size: 11px;
-                font-weight: bold;
-                color: {color};
-                min-width: 100px;
-                text-align: left;
-            }}
-        """)
-        data_row.addWidget(temp_label)
-
-        vol_label = QLabel("波动: --")
-        vol_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: "{font_family}";
-                font-size: 11px;
-                font-weight: bold;
-                color: #666666;
-                min-width: 150px;
-                text-align: left;
-            }}
-        """)
-        data_row.addWidget(vol_label)
-
+        name_layout.addWidget(name_label, 1)
+        name_layout.addStretch()
         reset_btn = QPushButton("重置")
-        reset_btn.setFixedSize(40, 18)
-        reset_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-family: "{font_family}";
-                font-size: 10px;
-                font-weight: bold;
-                background-color: #f0f0f0;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                color: #333333;
-                padding: 1px;
-            }}
-            QPushButton:hover {{
-                background-color: #e0e0e0;
-                border-color: #999999;
-            }}
-            QPushButton:pressed {{
-                background-color: #d0d0d0;
-            }}
-        """)
-        data_row.addWidget(reset_btn)
+        reset_btn.setFixedSize(38, 18)
+        reset_btn.setStyleSheet(
+            'QPushButton{font-size:10px;background:#f0f0f0;border:1px solid #cccccc;'
+            'border-radius:3px;color:#333333;padding:1px;}'
+            'QPushButton:hover{background:#e0e0e0;}')
+        name_layout.addWidget(reset_btn)
+        self.table.setCellWidget(row, 0, name_cell)
 
-        # 统计量行: Min / Max / Avg
-        stats_row = QHBoxLayout()
-        stats_row.setContentsMargins(12, 0, 4, 0)
-        stats_row.setSpacing(6)
+        self.table.setItem(row, 1, QTableWidgetItem("--"))  # 当前值
+        self.table.setItem(row, 2, QTableWidgetItem("--"))  # Max
+        self.table.setItem(row, 3, QTableWidgetItem("--"))  # Min
+        self.table.setItem(row, 4, QTableWidgetItem("--"))  # Avg
+        self.table.setItem(row, 5, QTableWidgetItem("--"))  # Std
+        self.table.setItem(row, 6, QTableWidgetItem("--"))  # T0
+        self.table.setItem(row, 7, QTableWidgetItem("--"))  # T1
+        self.table.setItem(row, 8, QTableWidgetItem("--"))  # T2
+        self.table.setItem(row, 9, QTableWidgetItem("--"))  # T3
+        for c in range(1, 10):
+            item = self.table.item(row, c)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        stat_label_style = f"""
-            QLabel {{
-                font-family: "{font_family}";
-                font-size: 11px;
-                font-weight: bold;
-                color: #555555;
-                min-width: 110px;
-                text-align: left;
-            }}
-        """
-
-        min_label = QLabel("Min: --")
-        min_label.setStyleSheet(stat_label_style)
-        stats_row.addWidget(min_label)
-
-        max_label = QLabel("Max: --")
-        max_label.setStyleSheet(stat_label_style)
-        stats_row.addWidget(max_label)
-
-        avg_label = QLabel("Avg: --")
-        avg_label.setStyleSheet(stat_label_style)
-        stats_row.addWidget(avg_label)
-
-        v_layout.addLayout(name_row)
-        v_layout.addLayout(data_row)
-        v_layout.addLayout(stats_row)
-
-        # 重置后记录行
-        post_record_row = QHBoxLayout()
-        post_record_row.setContentsMargins(12, 0, 4, 0)
-        post_record_row.setSpacing(6)
-
-        post_avg_label = QLabel("重置Avg: --")
-        post_avg_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: "{font_family}";
-                font-size: 11px;
-                font-weight: bold;
-                color: #888888;
-                min-width: 150px;
-                text-align: left;
-            }}
-        """)
-        post_record_row.addWidget(post_avg_label)
-
-        post_var_label = QLabel("重置波动: --")
-        post_var_label.setStyleSheet(f"""
-            QLabel {{
-                font-family: "{font_family}";
-                font-size: 11px;
-                font-weight: bold;
-                color: #888888;
-                min-width: 150px;
-                text-align: left;
-            }}
-        """)
-        post_record_row.addWidget(post_var_label)
-
-        # 默认隐藏重置后记录行，由 _on_auto_reset_toggle 控制显示
-        post_avg_label.setVisible(False)
-        post_var_label.setVisible(False)
-
-        v_layout.addLayout(post_record_row)
-
-        # 仅 auto_test 通道显示自动检测行
-        if auto_test:
-            auto_style = f"""
-                QLabel {{
-                    font-family: "{font_family}";
-                    font-size: 11px;
-                    font-weight: bold;
-                    color: #AA44AA;
-                    text-align: left;
-                }}
-            """
-
-            # 第一行：T0 T0-T1 T1 T2 T3
-            auto_test_row1 = QHBoxLayout()
-            auto_test_row1.setContentsMargins(16, 0, 8, 0)
-            auto_test_row1.setSpacing(6)
-
-            t0_label = QLabel("T0:--")
-            t0_label.setStyleSheet(auto_style + "min-width:90px;")
-            auto_test_row1.addWidget(t0_label)
-
-            t0t1_label = QLabel("T0-T1:--")
-            t0t1_label.setStyleSheet(auto_style + "min-width:90px;")
-            auto_test_row1.addWidget(t0t1_label)
-
-            t1_label = QLabel("T1:--")
-            t1_label.setStyleSheet(auto_style + "min-width:90px;")
-            auto_test_row1.addWidget(t1_label)
-
-            t2_label = QLabel("T2:--")
-            t2_label.setStyleSheet(auto_style + "min-width:90px;")
-            auto_test_row1.addWidget(t2_label)
-
-            t3_label = QLabel("T3:--")
-            t3_label.setStyleSheet(auto_style + "min-width:90px;")
-            auto_test_row1.addWidget(t3_label)
-
-            v_layout.addLayout(auto_test_row1)
-
-            # 第二行：Std1 Std2 Avg1 Avg2
-            auto_test_row2 = QHBoxLayout()
-            auto_test_row2.setContentsMargins(16, 0, 8, 0)
-            auto_test_row2.setSpacing(6)
-
-            vol1_label = QLabel("Std1:--")
-            vol1_label.setStyleSheet(auto_style + "min-width:120px;")
-            auto_test_row2.addWidget(vol1_label)
-
-            vol2_label = QLabel("Std2:--")
-            vol2_label.setStyleSheet(auto_style + "min-width:120px;")
-            auto_test_row2.addWidget(vol2_label)
-
-            avg1_label = QLabel("Avg1:--")
-            avg1_label.setStyleSheet(auto_style + "min-width:120px;")
-            auto_test_row2.addWidget(avg1_label)
-
-            avg2_label = QLabel("Avg2:--")
-            avg2_label.setStyleSheet(auto_style + "min-width:120px;")
-            auto_test_row2.addWidget(avg2_label)
-
-            v_layout.addLayout(auto_test_row2)
-        else:
-            # 非 auto_test 通道，创建隐藏占位标签保持元组大小一致
-            t0_label = QLabel(""); t1_label = QLabel(""); t0t1_label = QLabel("")
-            t2_label = QLabel(""); t3_label = QLabel(""); vol1_label = QLabel("")
-            vol2_label = QLabel(""); avg1_label = QLabel(""); avg2_label = QLabel("")
-            for lbl in (t0_label, t1_label, t0t1_label, t2_label, t3_label, vol1_label, vol2_label, avg1_label, avg2_label):
-                lbl.setFixedSize(0, 0)
-
-        self.device_items[device_id] = (color_widget, name_label, temp_label, vol_label,
-                                         min_label, max_label, avg_label, reset_btn,
-                                         post_avg_label, post_var_label,
-                                         t0_label, t1_label, t0t1_label, t2_label, t3_label,
-                                         vol1_label, vol2_label, avg1_label, avg2_label)
+        self.device_items[device_id] = (name_label, color, reset_btn, row)
         self.device_colors[device_id] = color
-
-        container = QWidget()
-        container.setLayout(v_layout)
-        container.setStyleSheet("background-color: transparent;")
-        self.device_containers[device_id] = container
-        self.main_layout.addWidget(container)
+        self.device_containers[device_id] = row
+        self.device_units[device_id] = unit
 
         reset_btn.clicked.connect(lambda checked, idx=device_id: self.reset_volatility(idx))
 
+    def _unit_for(self, device_id, unit):
+        """确定显示单位：优先用传入单位，否则用设备记录的单位"""
+        if unit:
+            return unit
+        return self.device_units.get(device_id, '°C')
+
+    def _set_name_cell(self, row, name, color):
+        """更新通道名称单元格内容（色点+名称+重置按钮）"""
+        cell = self.table.cellWidget(row, 0)
+        if cell is not None:
+            name_lbl = cell.findChild(QLabel, "nameLabel")
+            if name_lbl is not None:
+                name_lbl.setText(name)
+
     def update_temperature(self, device_id, temperature, unit='°C'):
+        # 当前温度实时显示在"当前值"列（列1，Max 左侧），不加单位
         if device_id in self.device_items:
-            _, _, temp_label, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
-            color = self.device_colors.get(device_id, "#ff0000")
+            row = self.device_items[device_id][3]
             if temperature is not None:
-                display_unit = f" {unit}" if unit else ""
-                temp_label.setText(f"{temperature:.2f}{display_unit}")
-                temp_label.setStyleSheet(f"""
-                    QLabel {{
-                        font-family: "{font_family}";
-                        font-size: 12px;
-                        font-weight: bold;
-                        color: {color};
-                        min-width: 100px;
-                        text-align: left;
-                    }}
-                """)
-            else:
-                display_unit = f" {unit}" if unit else ""
-                temp_label.setText(f"--{display_unit}")
-                temp_label.setStyleSheet(f"""
-                    QLabel {{
-                        font-family: "{font_family}";
-                        font-size: 12px;
-                        font-weight: bold;
-                        color: #ff0000;
-                        min-width: 100px;
-                        text-align: left;
-                    }}
-                """)
+                self.table.item(row, 1).setText(f"{temperature:.2f}")
 
     def update_device_name(self, device_id, new_name):
         if device_id in self.device_items:
-            _, name_label, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
-            name_label.setText(new_name)
+            row = self.device_items[device_id][3]
+            self._set_name_cell(row, new_name, self.device_colors.get(device_id, "#333333"))
 
     def update_volatility(self, device_id, volatility, duration_min=None, unit='°C'):
         if device_id in self.device_items:
-            _, _, _, vol_label, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
+            row = self.device_items[device_id][3]
             if volatility is None:
-                vol_label.setText("波动: --")
+                self.table.item(row, 5).setText("--")
             else:
-                display_unit = unit if unit else ""
-                volatility_str = f"{volatility:.4f}{display_unit}"
-                if duration_min is not None and duration_min < 30:
-                    volatility_str = f"{volatility:.4f}{display_unit}({duration_min:.1f}min)"
-                vol_label.setText(f"波动: {volatility_str}")
+                # 减小显示位数，单行紧凑显示（2位小数，去掉时长后缀）
+                self.table.item(row, 5).setText(f"{volatility:.2f}")
 
     def update_stats(self, device_id, min_val=None, max_val=None, avg_val=None, unit=''):
         if device_id in self.device_items:
-            _, _, _, _, min_label, max_label, avg_label, _, _, _, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
-            display_unit = f" {unit}" if unit else ""
-            if min_val is None:
-                min_label.setText("Min: --")
-            else:
-                min_label.setText(f"Min: {min_val:.2f}{display_unit}")
-            if max_val is None:
-                max_label.setText("Max: --")
-            else:
-                max_label.setText(f"Max: {max_val:.2f}{display_unit}")
-            if avg_val is None:
-                avg_label.setText("Avg: --")
-            else:
-                avg_label.setText(f"Avg: {avg_val:.2f}{display_unit}")
+            row = self.device_items[device_id][3]
+            self.table.item(row, 3).setText("--" if min_val is None else f"{min_val:.2f}")  # Min
+            self.table.item(row, 2).setText("--" if max_val is None else f"{max_val:.2f}")  # Max
+            if avg_val is not None:
+                self.table.item(row, 4).setText(f"{avg_val:.2f}")  # Avg
 
     def reset_volatility(self, device_id):
         self.volatility_reset_times[device_id] = datetime.now()
         if device_id in self.device_items:
-            _, _, _, vol_label, min_label, max_label, avg_label, _, _, _, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
-            vol_label.setText("波动: --")
-            min_label.setText("Min: --")
-            max_label.setText("Max: --")
-            avg_label.setText("Avg: --")
+            row = self.device_items[device_id][3]
+            self.table.item(row, 2).setText("--")  # Max
+            self.table.item(row, 3).setText("--")  # Min
+            self.table.item(row, 4).setText("--")  # Avg
+            self.table.item(row, 5).setText("--")  # Std
 
     def get_reset_time(self, device_id):
         return self.volatility_reset_times.get(device_id)
 
     def update_post_reset_record(self, device_id, avg_val, var_val, unit='°C'):
-        """更新重置后记录：显示设定时长到时的Avg和方差"""
-        if device_id in self.device_items:
-            _, _, _, _, _, _, _, _, post_avg_label, post_var_label, _, _, _, _, _, _, _, _, _ = self.device_items[device_id]
-            display_unit = f" {unit}" if unit else ""
-            if avg_val is not None and var_val is not None:
-                post_avg_label.setText(f"重置Avg: {avg_val:.2f}{display_unit}")
-                post_var_label.setText(f"重置波动: {var_val:.4f}")
-                self.post_reset_records[device_id] = {'avg': avg_val, 'var': var_val, 'recorded': True}
-            else:
-                post_avg_label.setText("重置Avg: --")
-                post_var_label.setText("重置波动: --")
+        """更新重置后记录（表格模式下保留状态存储，不额外显示）"""
+        if avg_val is not None and var_val is not None:
+            self.post_reset_records[device_id] = {'avg': avg_val, 'var': var_val, 'recorded': True}
+        else:
+            self.post_reset_records[device_id] = {'avg': None, 'var': None, 'recorded': False}
 
     def update_auto_test(self, device_id, t0=None, t1=None, t2=None, t3=None,
                          vol1=None, vol2=None, avg1=None, avg2=None, t0t1=None):
-        """更新自动检测信息（T0/T1/T0-T1/T2/T3/Std1/Std2/Avg1/Avg2）"""
+        """更新自动检测信息：表格中显示 T0/T1/T2/T3 列（时间，单位 min）"""
         if device_id in self.device_items:
-            _, _, _, _, _, _, _, _, _, _, t0_label, t1_label, t0t1_label, t2_label, t3_label, vol1_label, vol2_label, avg1_label, avg2_label = self.device_items[device_id]
-            t0_label.setText(f"T0:{t0:.2f}" if t0 is not None else "T0:--")
-            t1_label.setText(f"T1:{t1:.2f}" if t1 is not None else "T1:--")
-            if t0t1 is not None:
-                t0t1_label.setText(f"T0-T1:{t0t1:.2f}")
-            elif t0 is not None and t1 is not None:
-                t0t1_label.setText(f"T0-T1:{t1-t0:.2f}")
-            else:
-                t0t1_label.setText("T0-T1:--")
-            t2_label.setText(f"T2:{t2:.2f}" if t2 is not None else "T2:--")
-            t3_label.setText(f"T3:{t3:.2f}" if t3 is not None else "T3:--")
-            vol1_label.setText(f"Std1:{vol1:.4f}" if vol1 is not None else "Std1:--")
-            vol2_label.setText(f"Std2:{vol2:.4f}" if vol2 is not None else "Std2:--")
-            avg1_label.setText(f"Avg1:{avg1:.4f}°C" if avg1 is not None else "Avg1:--")
-            avg2_label.setText(f"Avg2:{avg2:.4f}°C" if avg2 is not None else "Avg2:--")
+            row = self.device_items[device_id][3]
+            self.table.item(row, 6).setText("--" if t0 is None else f"{t0:.2f}")  # T0
+            if t1 is not None:
+                self.table.item(row, 7).setText(f"{t1:.2f}")  # T1
+            elif t0t1 is not None and t0 is not None:
+                self.table.item(row, 7).setText(f"{t0 + t0t1:.2f}")
+            self.table.item(row, 8).setText("--" if t2 is None else f"{t2:.2f}")  # T2
+            self.table.item(row, 9).setText("--" if t3 is None else f"{t3:.2f}")  # T3
 
     def clear_auto_test(self):
         """清空所有自动检测信息"""
-        for device_id in self.device_items:
-            self.update_auto_test(device_id)
+        for device_id in list(self.device_items.keys()):
+            row = self.device_items[device_id][3]
+            self.table.item(row, 6).setText("--")  # T0
+            self.table.item(row, 7).setText("--")  # T1
+            self.table.item(row, 8).setText("--")  # T2
+            self.table.item(row, 9).setText("--")  # T3
 
     def clear_post_reset_records(self):
         """清空所有重置后记录"""
         for device_id in list(self.post_reset_records.keys()):
             self.post_reset_records[device_id] = {'avg': None, 'var': None, 'recorded': False}
-        for device_id in self.device_items:
-            self.update_post_reset_record(device_id, None, None)
 
     def set_post_reset_visible(self, visible):
-        """显示/隐藏所有设备的重置后记录行"""
-        for device_id in list(self.device_items.keys()):
-            item = self.device_items[device_id]
-            if len(item) >= 10:
-                # post_avg_label[8], post_var_label[9]
-                if visible:
-                    item[8].setVisible(True)
-                    item[9].setVisible(True)
-                else:
-                    item[8].setVisible(False)
-                    item[9].setVisible(False)
+        """兼容接口：表格模式下无独立重置记录行，空操作"""
+        pass
 
     def set_device_visible(self, device_id, visible):
-        """根据启用状态显示/隐藏指定设备的整个图例条目"""
+        """根据启用状态显示/隐藏指定设备的整行"""
         if device_id in self.device_containers:
-            self.device_containers[device_id].setVisible(visible)
+            self.table.setRowHidden(self.device_containers[device_id], not visible)
+
+    def append_terminal(self, text):
+        """终端信息区域已取消，此方法为空操作（保留兼容调用）"""
+        pass
+
+    def clear_terminal(self):
+        """终端信息区域已取消，此方法为空操作（保留兼容调用）"""
+        pass
 
     def clear(self):
-        for i in reversed(range(self.main_layout.count())):
-            widget = self.main_layout.itemAt(i).widget()
-            if widget:
-                widget.deleteLater()
+        self.table.setRowCount(0)
         self.device_items.clear()
         self.device_containers.clear()
         self.volatility_reset_times.clear()
@@ -485,6 +299,7 @@ class SerialDebugDialog(QDialog):
         self.setWindowTitle("通讯调试 - 详细通讯信息")
         self.resize(1000, 600)
         self.setWindowFlags(Qt.WindowType.Window)
+        self._geom_restored = False
         layout = QVBoxLayout(self)
 
         control_layout = QHBoxLayout()
@@ -546,6 +361,60 @@ class SerialDebugDialog(QDialog):
 
     def clear_text(self):
         self.text_edit.clear()
+
+    def showEvent(self, event):
+        """窗口首次显示时恢复上次位置和大小（延迟执行，确保布局完成）"""
+        super().showEvent(event)
+        if not getattr(self, '_geom_restored', False):
+            QTimer.singleShot(50, self._restore_geometry)
+            self._geom_restored = True
+
+    def _restore_geometry(self):
+        geom_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.json")
+        try:
+            if os.path.exists(geom_file):
+                with open(geom_file, 'r') as f:
+                    data = json.load(f)
+                if 'serial_debug' in data and isinstance(data['serial_debug'], dict):
+                    g = data['serial_debug']
+                    x, y, w, h = g.get('x', 0), g.get('y', 0), g.get('w', 0), g.get('h', 0)
+                    if w > 0 and h > 0:
+                        self.move(x, y)
+                        self.resize(w, h)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        """窗口大小/位置变化时实时保存（立即固化为默认）"""
+        super().resizeEvent(event)
+        geom_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.json")
+        try:
+            data = {}
+            if os.path.exists(geom_file):
+                with open(geom_file, 'r') as f:
+                    data = json.load(f)
+            g = self.geometry()
+            data['serial_debug'] = {'x': g.x(), 'y': g.y(), 'w': g.width(), 'h': g.height()}
+            with open(geom_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        # 保存窗口位置与大小到 JSON 文件（直接存 x/y/w/h）
+        geom_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.json")
+        try:
+            data = {}
+            if os.path.exists(geom_file):
+                with open(geom_file, 'r') as f:
+                    data = json.load(f)
+            g = self.geometry()
+            data['serial_debug'] = {'x': g.x(), 'y': g.y(), 'w': g.width(), 'h': g.height()}
+            with open(geom_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+        event.accept()
 
 
 # ==================== 串口管理器 ====================
@@ -1106,7 +975,7 @@ class TemperatureQueryThread(QThread):
     """后台查询温度源 Main/Sec 温度，不阻塞主线程
 
     支持:
-      - Fluke 9250 / Fluke 9243: SOUR:SENS:DATA? TEMP1 / TEMP2
+      - Fluke 9250: SOUR:SENS:DATA? TEMP1 / TEMP2
     """
     temp1_ready = pyqtSignal(float)
     temp2_ready = pyqtSignal(float)
@@ -1140,7 +1009,7 @@ class TemperatureQueryThread(QThread):
         while self.running:
             try:
                 resp = self.manager.send_command(cmd1, timeout=1.0)
-                print(f"[TempQuery {label}] cmd1 resp: {resp!r}")
+                # 问询响应不打印
                 temp = self._parse_first_number(resp)
                 if temp is not None:
                     self.temp1_ready.emit(temp)
@@ -1149,7 +1018,7 @@ class TemperatureQueryThread(QThread):
 
             try:
                 resp = self.manager.send_command(cmd2, timeout=1.0)
-                print(f"[TempQuery {label}] cmd2 resp: {resp!r}")
+                # 问询响应不打印
                 temp = self._parse_first_number(resp)
                 if temp is not None:
                     self.temp2_ready.emit(temp)
@@ -1199,6 +1068,56 @@ class Const1210QueryThread(QThread):
     def stop(self):
         self.running = False
         self.wait(2000)
+
+
+# ==================== 可清空数值输入框 ====================
+class NullableSpinBox(QDoubleSpinBox):
+    """可清空的数值输入框：留空表示使用温度源默认值（不发送该条命令）。
+       value() 在留空时返回 None。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._is_none = False
+
+    def value(self):
+        """留空返回 None，否则返回数值"""
+        return None if self._is_none else super().value()
+
+    def setValue(self, val):
+        """传入 None 或空字符串则清空（回到默认值状态）"""
+        if val is None or (isinstance(val, str) and val.strip() == ''):
+            self._is_none = True
+            self.clear()
+        else:
+            self._is_none = False
+            super().setValue(float(val))
+
+    def setPlaceholderText(self, text):
+        le = self.lineEdit()
+        if le is not None:
+            le.setPlaceholderText(text)
+
+    def validate(self, text, pos):
+        # 允许输入框内容被完全删除
+        if text.strip() == '':
+            return (QValidator.State.Acceptable, text, pos)
+        return super().validate(text, pos)
+
+    def valueFromText(self, text):
+        self._is_none = (text.strip() == '')
+        if self._is_none:
+            return self.minimum()
+        return super().valueFromText(text)
+
+    def textFromValue(self, val):
+        # 留空状态不回填数值文本，保持空白
+        return '' if self._is_none else super().textFromValue(val)
+
+    def stepBy(self, steps):
+        if self._is_none:
+            self._is_none = False
+            super().setValue(self.minimum())
+        super().stepBy(steps)
 
 
 # ==================== 可折叠组框 ====================
@@ -1320,12 +1239,12 @@ class DataCollectorApp(QMainWindow):
         self.config_file = 'serial_collector_config.json'
 
         self.devices = [
-            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备1', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False},
-            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备2', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False},
-            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备3', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False},
-            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备4', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False},
-            {'enabled': False, 'connection': 'lan', 'port': '', 'baudrate': '9600', 'name': 'ConST1210 CH1', 'read_command': 'MEASure:TEMPerature?\r\n', 'host': '192.168.0.182', 'lan_port': '8000', 'auto_test': False},
-            {'enabled': False, 'connection': 'lan', 'port': '', 'baudrate': '9600', 'name': 'ConST1210 CH3', 'read_command': 'MEASure:TEMPerature?\r\n', 'host': '192.168.0.182', 'lan_port': '8000', 'auto_test': False},
+            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备1', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False, 'curve_visible': True},
+            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备2', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False, 'curve_visible': True},
+            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备3', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False, 'curve_visible': True},
+            {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600', 'name': '设备4', 'read_command': '', 'host': '', 'lan_port': '', 'auto_test': False, 'curve_visible': True},
+            {'enabled': False, 'connection': 'lan', 'port': '', 'baudrate': '9600', 'name': 'ConST1210 CH1', 'read_command': 'MEASure:TEMPerature?\r\n', 'host': '192.168.0.182', 'lan_port': '8000', 'auto_test': False, 'curve_visible': True},
+            {'enabled': False, 'connection': 'lan', 'port': '', 'baudrate': '9600', 'name': 'ConST1210 CH3', 'read_command': 'MEASure:TEMPerature?\r\n', 'host': '192.168.0.182', 'lan_port': '8000', 'auto_test': False, 'curve_visible': True},
         ]
 
         self.device_threads = []
@@ -1353,6 +1272,9 @@ class DataCollectorApp(QMainWindow):
         self.sequential_timer = QTimer()    # 顺序执行定时器
         self.sequential_timer.timeout.connect(self._sequential_tick)
         self.sequential_test_complete = False  # 当前行T3是否已完成
+        self.sequential_mode = 'forward'    # 测试模式：forward顺序 / reverse倒序 / loop循环
+        self.seq_row_order = []             # 执行的行索引序列
+        self.seq_step = 0                   # 在 seq_row_order 中的当前位置
 
         # 定时测试
         self.sched_test_armed = False
@@ -1364,6 +1286,21 @@ class DataCollectorApp(QMainWindow):
         self.auto_test_log = []          # [(时间, 通道名, T0, T1, T2, T3, Std1, Std2, Avg1, Avg2), ...]
         self.auto_test_logged = {}       # dev_id -> set of logged phases
         self.auto_test_lines = []        # 图上标注线列表
+        self.auto_test_summary = None    # T3完成后的跨通道汇总 {'Main':..,'Sec':..,...}
+
+        # 轴向测试
+        self.axial_running = False       # 轴向测试是否正在计时
+        self.axial_timer = None          # 轴向测试计时器
+        self.axial_start_time = None     # 轴向测试开始时间
+        self.axial_test_duration = 0     # 轴向测试设定时长（秒）
+        self.axial_records = []          # 轴向测试记录 [(key, F_avg, M_avg, 记录时间), ...]（兼容旧字段）
+        self.axial_data = {}             # 轴向测试数据字典 {key(float或str): {'F':..., 'M':..., 'time':...}}
+        self.axial_keys = []             # 已添加到表格的 key 顺序列表（列顺序）。轴向=float 高度，径向=str 位置对
+        self.axial_mode = 'axial'        # 当前模式：'axial' (轴向，高度/mm) 或 'radial' (径向，位置)
+        self.axial_current_height = 0    # 当前测试高度
+        self.axial_queue = []            # 待测试高度队列
+        self.axial_queue_idx = 0         # 队列当前位置
+        self.axial_columns = []          # 轴向列信息 [{'key': k, 'mode': m, 'save_btn': btn, 'col': col, 'header_widget': hw}, ...]
 
         # Excel保存并发控制
         self._bg_save_thread = None
@@ -1388,21 +1325,20 @@ class DataCollectorApp(QMainWindow):
         self._ts_row_count = 3
         self._ts_row_layouts = []        # 存储行布局引用
 
-        # 温度源设备类型（Fluke 9250 / Fluke 9243 / Const 1210）
+        # 温度源设备类型（Fluke 9250 / Const 1210）
         self._ts_device_type = 'Fluke 9250'
         # 每个设备的通讯方式偏好（'serial'/'lan'），切换设备时自动恢复
-        self._ts_device_conn_prefs = {'Fluke 9250': 'serial', 'Fluke 9243': 'serial', 'Const 1210': 'lan'}
+        self._ts_device_conn_prefs = {'Fluke 9250': 'serial', 'Const 1210': 'lan'}
         # 每设备独立的连接管理器、连接状态、通讯参数
-        self._ts_device_managers = {'Fluke 9250': None, 'Fluke 9243': None, 'Const 1210': None}
-        self._ts_device_connected = {'Fluke 9250': False, 'Fluke 9243': False, 'Const 1210': False}
+        self._ts_device_managers = {'Fluke 9250': None, 'Const 1210': None}
+        self._ts_device_connected = {'Fluke 9250': False, 'Const 1210': False}
         self._ts_device_settings = {
             'Fluke 9250': {'port': '', 'baud': 115200, 'ip': '', 'lan_port': 8000},
-            'Fluke 9243': {'port': '', 'baud': 115200, 'ip': '', 'lan_port': 8000},
             'Const 1210': {'port': '', 'baud': 115200, 'ip': '', 'lan_port': 8000},
         }
         # 每个设备类型独立保存的完整温度源参数（行设置 + 波动阈值），切换设备时自动恢复
         self._ts_device_full_settings = {
-            'Fluke 9250': None, 'Fluke 9243': None, 'Const 1210': None,
+            'Fluke 9250': None, 'Const 1210': None,
         }
         self._ts_row_advanced_widgets = []  # 每行的"高级控件"列表（Const 1210 时需要隐藏）
 
@@ -1443,7 +1379,7 @@ class DataCollectorApp(QMainWindow):
             return
 
         top_widget = self.left_splitter.widget(0)
-        plot_group = self.left_splitter.widget(1)
+        legend_group = self.left_splitter.widget(1)
         spacing = 5  # 与 top_left_layout.setSpacing(5) 一致
 
         # 遍历 top_widget 内所有 CollapsibleGroupBox，计算最小高度
@@ -1459,27 +1395,38 @@ class DataCollectorApp(QMainWindow):
         if gb_count > 1:
             top_min_h += spacing * (gb_count - 1)
 
-        top_min_h = max(top_min_h, 40)
+        # 下部实时数据显示组框的最小高度（折叠时只保留标题栏）
+        legend_min_h = legend_group.toggle_btn.sizeHint().height() + 8
+        legend_group.setMinimumHeight(legend_min_h)
+
+        top_min_h = max(top_min_h, 40, legend_min_h)
 
         # 设置 top_left_widget 的最小高度（拖动时不允许低于此值）
         top_widget.setMinimumHeight(top_min_h)
 
-        # 设置 plot_group 的最小高度（折叠时只保留标题栏）
-        plot_min_h = plot_group.toggle_btn.sizeHint().height() + 8
-        plot_group.setMinimumHeight(plot_min_h)
+        new_legend_h = max(total - top_min_h, legend_min_h)
+        new_top_h = total - new_legend_h
+        self.left_splitter.setSizes([new_top_h, new_legend_h])
 
-        top_min_h = max(top_min_h, plot_min_h)
-        new_plot_h = max(total - top_min_h, plot_min_h)
-        new_top_h = total - new_plot_h
-        self.left_splitter.setSizes([new_top_h, new_plot_h])
+    def _update_title_datetime(self):
+        """在窗口标题的版本号旁刷新当前系统日期时间"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.setWindowTitle(f"T-cal_tester v{APP_VERSION}    {now}")
 
     def init_ui(self):
         self.setGeometry(100, 100, 1800, 950)
+        self._geometry_restored = False  # 标记：showEvent 中恢复一次后不再重复
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QHBoxLayout(main_widget)
         layout.setContentsMargins(10,10,10,10)
         layout.setSpacing(0)
+
+        # 窗口标题栏：版本号旁显示实时日期时间（每秒刷新）
+        self._update_title_datetime()
+        self.title_time_timer = QTimer(self)
+        self.title_time_timer.timeout.connect(self._update_title_datetime)
+        self.title_time_timer.start(1000)
 
         # 主水平分割器：左侧(设备+曲线) ｜ 右侧(数据显示)
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1503,10 +1450,10 @@ class DataCollectorApp(QMainWindow):
         top_left_layout.setSpacing(5)
 
         # 设备配置区域（可折叠）
-        device_group = CollapsibleGroupBox("设备配置")
-        device_group.toggled.connect(self._redistribute_left_splitter)
-        top_left_layout.addWidget(device_group)
-        device_layout = device_group.contentLayout()
+        self.device_group = CollapsibleGroupBox("设备配置")
+        self.device_group.toggled.connect(self._redistribute_left_splitter)
+        top_left_layout.addWidget(self.device_group)
+        device_layout = self.device_group.contentLayout()
 
         # 设备表头（仅保留+/-按钮）
         header_widget = QWidget()
@@ -1582,40 +1529,10 @@ class DataCollectorApp(QMainWindow):
             left_btn_layout.addWidget(make_button(text, color, cb))
             left_btn_layout.setStretch(left_btn_layout.count() - 1, 1)
 
-        right_btn_layout = QHBoxLayout()
-        right_btn_layout.setSpacing(6)
-        self.collect_btn = QPushButton("开始采集")
-        self.collect_btn.setFixedSize(78, 24)
-        self.collect_btn.clicked.connect(self._toggle_collection)
-        right_btn_layout.addWidget(self.collect_btn)
-        right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-        self._update_collect_btn()
-
-        self.record_btn = make_button("记录数据", "#E91E63", self.record_current_data, enabled=False)
-        right_btn_layout.addWidget(self.record_btn)
-        right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-
-        self.reset_stats_btn = make_button("重置统计", "#FF9800", self.reset_stats_all)
-        right_btn_layout.addWidget(self.reset_stats_btn)
-        right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-
-        self.reset_plot_btn = make_button("重置图像", "#795548", self.reset_curve_display)
-        right_btn_layout.addWidget(self.reset_plot_btn)
-        right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-
-        self.reset_view_btn = make_button("缩放重置", "#607D8B", self._reset_plot_view)
-        right_btn_layout.addWidget(self.reset_view_btn)
-        right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-
-        self.save_btn = make_button("手动保存", "#009688", self.manual_save_data, enabled=False)
-        right_btn_layout.addWidget(self.save_btn)
-        right_btn_layout.setStretch(right_btn_layout.count() - 1, 1)
-
         btn_container = QHBoxLayout()
         btn_container.setSpacing(10)
         btn_container.addLayout(left_btn_layout)
         btn_container.addStretch()
-        btn_container.addLayout(right_btn_layout)
         device_layout.addLayout(btn_container)
 
         # 状态栏
@@ -1624,10 +1541,10 @@ class DataCollectorApp(QMainWindow):
         self.status_label = QLabel("就绪")
         self.status_bar.addWidget(self.status_label)
 
-        # 温度源控制区域（可折叠）
-        temp_ctrl_group = CollapsibleGroupBox("温度源控制")
-        left_layout.addWidget(temp_ctrl_group)
-        temp_ctrl_layout = temp_ctrl_group.contentLayout()
+        # 温度源控制区域（可折叠）——标题改为“测试模式”
+        self.temp_ctrl_group = CollapsibleGroupBox("测试模式")
+        left_layout.addWidget(self.temp_ctrl_group)
+        temp_ctrl_layout = self.temp_ctrl_group.contentLayout()
         temp_ctrl_layout.setSpacing(5)
 
         # 温度源设备选择
@@ -1646,7 +1563,7 @@ class DataCollectorApp(QMainWindow):
         device_select_layout.addWidget(self.stability_threshold_spin)
         device_select_layout.addWidget(QLabel("设备类型:"))
         self.temp_source_device_combo = QComboBox()
-        self.temp_source_device_combo.addItems(['Fluke 9250', 'Fluke 9243', 'Const 1210'])
+        self.temp_source_device_combo.addItems(['Fluke 9250', 'Const 1210'])
         self.temp_source_device_combo.setFixedWidth(130)
         self.temp_source_device_combo.currentTextChanged.connect(self._on_temp_source_device_changed)
         device_select_layout.addWidget(self.temp_source_device_combo)
@@ -1666,7 +1583,26 @@ class DataCollectorApp(QMainWindow):
         self._ts_remove_btn.clicked.connect(self._ts_remove_row)
         header_layout.addWidget(self._ts_remove_btn)
         header_layout.addStretch()
-        temp_ctrl_layout.addLayout(header_layout)
+
+        # ===== 自动测试区域（外框 QGroupBox，置于 SP 表格上方）=====
+        self.ts_auto_cont = QGroupBox("自动测试")
+        self.ts_auto_cont.setStyleSheet(
+            "QGroupBox{font-size:11px;font-weight:bold;color:#9C27B0;"
+            "border:1px solid #b39ddb;border-radius:5px;margin-top:8px;padding:3px;}"
+            "QGroupBox::title{subcontrol-origin:margin;left:8px;top:2px;}")
+        # 自动测试框内垂直布局：按钮行 + 表头 + SP 表格
+        ts_auto_layout = QVBoxLayout(self.ts_auto_cont)
+        ts_auto_layout.setContentsMargins(4, 8, 4, 4)
+        ts_auto_layout.setSpacing(2)
+        # 按钮行（水平）：顺序/循环/倒序/间隔/定时
+        self.ts_auto_btns_row = QHBoxLayout()
+        self.ts_auto_btns_row.setSpacing(4)
+        ts_auto_layout.addLayout(self.ts_auto_btns_row)
+        self.ts_rows_layout = ts_auto_layout  # SP 行所在布局引用
+        temp_ctrl_layout.addWidget(self.ts_auto_cont)
+
+        # 表头加入自动测试框内（SP 表格上方）
+        ts_auto_layout.addLayout(header_layout)
 
         # 行设置
         self.row_setpoint_spins = []
@@ -1703,13 +1639,15 @@ class DataCollectorApp(QMainWindow):
         )
 
         def make_spin(range_min, val, step, decimal, width, suffix=''):
-            s = QDoubleSpinBox()
+            # PID 等可删除项使用可清空输入框，留空表示使用默认值（不发送）
+            s = NullableSpinBox()
             s.setRange(range_min, 9999)
             s.setValue(val)
             s.setSingleStep(step)
             s.setDecimals(decimal)
             s.setFixedWidth(width)
             s.setStyleSheet(no_arrow_style)
+            s.setPlaceholderText("默认")
             if suffix:
                 s.setSuffix(suffix)
             return s
@@ -1751,6 +1689,7 @@ class DataCollectorApp(QMainWindow):
                 "QPushButton:disabled{background:#ccc;color:#888;}"
             )
             send_btn.clicked.connect(lambda _, btn=send_btn: self._send_row_command(self.row_send_btns.index(btn)))
+            send_btn.setEnabled(False)  # 初始未通信，禁用
             row_layout.addWidget(send_btn)
             self.row_send_btns.append(send_btn)
 
@@ -1817,32 +1756,30 @@ class DataCollectorApp(QMainWindow):
             row_layout.addWidget(g); advanced.append(g)
             self.row_sec_pid_d.append(sd)
 
-            # Weight：标签 + 3个输入框组合为一个整体（标签同样用前缀样式）
-            wt_widget = QWidget()
-            wt_h = QHBoxLayout(wt_widget)
-            wt_h.setContentsMargins(0, 0, 0, 0)
-            wt_h.setSpacing(0)
-            wt_lbl = QLabel("Wt")
-            wt_lbl.setStyleSheet("QLabel{color:#333333;padding-right:0px;}")
-            wt_h.addWidget(wt_lbl)
-            wt = []
-            for wi in range(3):
-                w = QLineEdit()
-                w.setFixedWidth(65)
-                w.textChanged.connect(lambda v: self.save_config())
-                wt_h.addWidget(w)
-                wt.append(w)
-            self.row_weights.append(wt)
-            row_layout.addWidget(wt_widget); advanced.append(wt_widget)
+            # Weight：已取消显示，保留空列表维持索引对齐（数据不再通过 UI 输入）
+            self.row_weights.append([])
+
+            row_layout.addStretch()  # 输入框靠左，不拉伸到右侧
 
             self._ts_row_advanced_widgets.append(advanced)
 
-            temp_ctrl_layout.addWidget(ts_container)
+            # SP 行加入自动测试框内的布局
+            self.ts_rows_layout.addWidget(ts_container)
             self._ts_row_layouts.append(ts_container)
 
         # 通用按钮样式
         btn_s = "QPushButton{color:white;font-weight:bold;font-size:11px;border-radius:4px;}"
         btn_d = "QPushButton:disabled{background:#ccc;color:#888;}"
+
+        # 手动测试区域外框容器（QGroupBox）
+        self.ts_manual_group = QGroupBox("手动测试")
+        self.ts_manual_group.setStyleSheet(
+            "QGroupBox{font-size:11px;font-weight:bold;color:#1f77b4;"
+            "border:1px solid #90caf9;border-radius:5px;margin-top:8px;padding:3px;}"
+            "QGroupBox::title{subcontrol-origin:margin;left:8px;top:2px;}")
+        manual_v = QVBoxLayout(self.ts_manual_group)
+        manual_v.setContentsMargins(4, 8, 4, 4)
+        manual_v.setSpacing(4)
 
         ctrl_row = QHBoxLayout()
         ctrl_row.setSpacing(4)
@@ -1888,6 +1825,25 @@ class DataCollectorApp(QMainWindow):
         ctrl_row.addWidget(self.serial_btn)
         self._update_serial_btn(False)
 
+        # SP 手动设置输入框 + 独立发送按钮（紧邻通信按钮右侧）
+        sp_ctl_lbl = QLabel("SP:")
+        sp_ctl_lbl.setStyleSheet("font-size:11px;font-weight:bold;color:#555555;")
+        ctrl_row.addWidget(sp_ctl_lbl)
+        self.ts_manual_sp_spin = QDoubleSpinBox()
+        self.ts_manual_sp_spin.setRange(-100000, 100000)  # 放开范围，不再限3位
+        self.ts_manual_sp_spin.setDecimals(3)
+        self.ts_manual_sp_spin.setSingleStep(1.0)
+        self.ts_manual_sp_spin.setValue(25.0)
+        self.ts_manual_sp_spin.setFixedWidth(100)
+        self.ts_manual_sp_spin.setStyleSheet(no_arrow_style)
+        ctrl_row.addWidget(self.ts_manual_sp_spin)
+        self.ts_manual_sp_btn = QPushButton("发送")
+        self.ts_manual_sp_btn.setFixedSize(55, 28)
+        self.ts_manual_sp_btn.setStyleSheet(btn_s + "QPushButton{background:#4CAF50;}" + btn_d)
+        self.ts_manual_sp_btn.clicked.connect(self._send_manual_sp)
+        self.ts_manual_sp_btn.setEnabled(False)  # 初始未通信，禁用
+        ctrl_row.addWidget(self.ts_manual_sp_btn)
+
         self.ts_btn = QPushButton()
         self.ts_btn.setFixedSize(75, 28)
         self.ts_btn.clicked.connect(self._toggle_ts)
@@ -1895,14 +1851,32 @@ class DataCollectorApp(QMainWindow):
         self._update_ts_btn(False)
         self.ts_btn.setEnabled(False)  # 初始串口未开，禁用
 
+        # ===== 自动测试按钮（顺序/循环/倒序/间隔/定时）加入自动测试框按钮行 =====
+        ts_auto_layout = self.ts_auto_btns_row
         self.seq_btn = QPushButton()
         self.seq_btn.setFixedSize(85, 28)
         self.seq_btn.clicked.connect(self._toggle_seq)
-        ctrl_row.addWidget(self.seq_btn)
+        ts_auto_layout.addWidget(self.seq_btn)
         self._update_seq_btn()
         self.seq_btn.setEnabled(False)  # 初始串口未开，禁用
 
-        ctrl_row.addWidget(QLabel("间隔:"))
+        # 循环测试按钮
+        self.loop_btn = QPushButton()
+        self.loop_btn.setFixedSize(85, 28)
+        self.loop_btn.clicked.connect(self._toggle_loop)
+        ts_auto_layout.addWidget(self.loop_btn)
+        self._update_loop_btn()
+        self.loop_btn.setEnabled(False)  # 初始串口未开，禁用
+
+        # 倒序测试按钮
+        self.reverse_btn = QPushButton()
+        self.reverse_btn.setFixedSize(85, 28)
+        self.reverse_btn.clicked.connect(self._toggle_reverse)
+        ts_auto_layout.addWidget(self.reverse_btn)
+        self._update_reverse_btn()
+        self.reverse_btn.setEnabled(False)  # 初始串口未开，禁用
+
+        ts_auto_layout.addWidget(QLabel("间隔:"))
         self.test_interval_spin = QDoubleSpinBox()
         self.test_interval_spin.setRange(0, 9999)
         self.test_interval_spin.setValue(0)
@@ -1913,7 +1887,7 @@ class DataCollectorApp(QMainWindow):
         self.test_interval_spin.setSuffix("min")
         self.test_interval_spin.setToolTip("每个setpoint完成后等待的时间")
         self.test_interval_spin.valueChanged.connect(lambda v: self.save_config())
-        ctrl_row.addWidget(self.test_interval_spin)
+        ts_auto_layout.addWidget(self.test_interval_spin)
 
         self.sched_time_edit = QDateTimeEdit()
         self.sched_time_edit.setDisplayFormat("MM-dd HH:mm")
@@ -1921,40 +1895,178 @@ class DataCollectorApp(QMainWindow):
         self.sched_time_edit.setFixedWidth(100)
         self.sched_time_edit.setCalendarPopup(False)
         self.sched_time_edit.setStyleSheet("QDateTimeEdit{border:1px solid #999;border-radius:3px;padding:2px;font-size:11px;}QDateTimeEdit::up-button,QDateTimeEdit::down-button,QDateTimeEdit::up-arrow,QDateTimeEdit::down-arrow,QDateTimeEdit::drop-down,QDateTimeEdit::calendar-popup{subcontrol-origin:border;subcontrol-position:right;width:0px;height:0px;border:none;image:none;margin:0;padding:0;}")
-        ctrl_row.addWidget(self.sched_time_edit)
+        ts_auto_layout.addWidget(self.sched_time_edit)
         self.sched_test_btn = QPushButton()
         self.sched_test_btn.setFixedSize(70, 28)
         self.sched_test_btn.clicked.connect(self._toggle_scheduled_test)
-        ctrl_row.addWidget(self.sched_test_btn)
+        ts_auto_layout.addWidget(self.sched_test_btn)
         self._update_sched_btn()
         self.sched_status_label = QLabel("")
         self.sched_status_label.setStyleSheet("font-size:10px;color:#607D8B;")
-        ctrl_row.addWidget(self.sched_status_label)
+        ts_auto_layout.addWidget(self.sched_status_label)
+        ts_auto_layout.addStretch()
 
-        # Main/Sec 温度
-        ctrl_row.addSpacing(4)
-        self.ts_main_temp_label = QLabel("M:--°C")
-        self.ts_main_temp_label.setStyleSheet("font-size:11px;font-weight:bold;color:#1f77b4;")
-        ctrl_row.addWidget(self.ts_main_temp_label)
-        self.ts_sec_temp_label = QLabel("S:--°C")
-        self.ts_sec_temp_label.setStyleSheet("font-size:11px;font-weight:bold;color:#ff7f0e;")
-        ctrl_row.addWidget(self.ts_sec_temp_label)
         # Const 1210 温度
         self.ts_const1210_temp_label = QLabel("Temp:--°C")
         self.ts_const1210_temp_label.setStyleSheet("font-size:11px;font-weight:bold;color:#e65100;")
         self.ts_const1210_temp_label.setVisible(False)
         ctrl_row.addWidget(self.ts_const1210_temp_label)
-
-        self.screenshot_btn = QPushButton("截图")
-        self.screenshot_btn.setStyleSheet(btn_s + "QPushButton{background:#673AB7;}" + btn_d)
-        self.screenshot_btn.setFixedSize(50, 26)
-        self.screenshot_btn.clicked.connect(self.save_current_plot)
-        ctrl_row.addWidget(self.screenshot_btn)
         ctrl_row.addStretch()
-        temp_ctrl_layout.addLayout(ctrl_row)
+        manual_v.addLayout(ctrl_row)
 
-        top_left_layout.addWidget(temp_ctrl_group)
-        temp_ctrl_group.toggled.connect(self._redistribute_left_splitter)
+        # ===== 采集操作按钮行（并入手动测试区域，独立一行避免叠字）=====
+        collect_row = QHBoxLayout()
+        collect_row.setSpacing(6)
+        self.collect_btn = QPushButton("开始测试")
+        self.collect_btn.setFixedSize(88, 26)
+        self.collect_btn.clicked.connect(self._toggle_collection)
+        collect_row.addWidget(self.collect_btn)
+        self._update_collect_btn()
+        # 是否判断 T3 时刻勾选框（不勾选则连续记录，不判断 T3 结束条件）
+        self.manual_check_t3_cb = QCheckBox("判断T3时刻")
+        self.manual_check_t3_cb.setChecked(True)
+        self.manual_check_t3_cb.setStyleSheet("font-size:11px;color:#1f77b4;")
+        self.manual_check_t3_cb.stateChanged.connect(lambda v: self.save_config())
+        collect_row.addWidget(self.manual_check_t3_cb)
+        self.record_btn = make_button("记录数据", "#E91E63", self.record_current_data, enabled=False)
+        collect_row.addWidget(self.record_btn)
+        self.reset_stats_btn = make_button("重置统计", "#FF9800", self.reset_stats_all)
+        collect_row.addWidget(self.reset_stats_btn)
+        self.reset_plot_btn = make_button("清空图像", "#795548", self.reset_curve_display)
+        collect_row.addWidget(self.reset_plot_btn)
+        self.reset_view_btn = make_button("缩放重置", "#607D8B", self._reset_plot_view)
+        collect_row.addWidget(self.reset_view_btn)
+        self.save_btn = make_button("手动保存", "#009688", self.manual_save_data, enabled=False)
+        collect_row.addWidget(self.save_btn)
+        self.screenshot_btn = make_button("截图", "#673AB7", self.save_current_plot)
+        collect_row.addWidget(self.screenshot_btn)
+        collect_row.addStretch()
+        manual_v.addLayout(collect_row)
+        # 手动测试外框容器加入温度源控制布局
+        temp_ctrl_layout.addWidget(self.ts_manual_group)
+
+        # ===== 轴向测试区域（置于手动测试下方，形式参考自动测试）=====
+        self.axial_group = QGroupBox("轴向/径向测试")
+        self.axial_group.setStyleSheet(
+            "QGroupBox{font-size:11px;font-weight:bold;color:#00796B;"
+            "border:1px solid #4db6ac;border-radius:5px;margin-top:8px;padding:3px;}"
+            "QGroupBox::title{subcontrol-origin:margin;left:8px;top:2px;}")
+        axial_layout = QVBoxLayout(self.axial_group)
+        axial_layout.setContentsMargins(4, 8, 4, 4)
+        axial_layout.setSpacing(4)
+
+        # 输入行：加减按钮（用于增加/减少高度列）
+        axial_input_row = QHBoxLayout()
+        # 加减按钮
+        self.axial_minus_btn = QPushButton("-")
+        self.axial_minus_btn.setFixedSize(26, 26)
+        self.axial_minus_btn.clicked.connect(self._axial_remove_height_column)
+        self.axial_minus_btn.setStyleSheet(
+            "QPushButton{background:#f44336;color:white;font-weight:bold;border-radius:4px;font-size:13px;}")
+        axial_input_row.addWidget(self.axial_minus_btn)
+        self.axial_plus_btn = QPushButton("+")
+        self.axial_plus_btn.setFixedSize(26, 26)
+        # 用 lambda 拦截 clicked 信号的 bool 参数，避免 height=False 导致重复
+        self.axial_plus_btn.clicked.connect(lambda: self._axial_add_height_column())
+        self.axial_plus_btn.setStyleSheet(
+            "QPushButton{background:#4CAF50;color:white;font-weight:bold;border-radius:4px;font-size:13px;}")
+        axial_input_row.addWidget(self.axial_plus_btn)
+        axial_layout.addLayout(axial_input_row)
+        axial_layout.setAlignment(axial_input_row, Qt.AlignmentFlag.AlignLeft)
+
+        # 状态显示（初始无文字，无"未开始"）
+        self.axial_status_label = QLabel("")
+        self.axial_status_label.setStyleSheet("font-size:11px;color:#00796B;font-weight:bold;")
+        axial_layout.addWidget(self.axial_status_label)
+
+        # 按钮行：模式选择 + 开始/记录按钮
+        axial_btns_layout = QHBoxLayout()
+        axial_btns_layout.setSpacing(2)
+        # 模式选择下拉框
+        self.axial_mode_combo = QComboBox()
+        self.axial_mode_combo.addItems(["轴向", "径向"])
+        self.axial_mode_combo.setFixedWidth(70)
+        self.axial_mode_combo.currentIndexChanged.connect(self._axial_on_mode_changed)
+        self.axial_mode_combo.setStyleSheet(
+            "QComboBox{font-size:11px;font-weight:bold;padding:2px 4px;border:1px solid #4db6ac;border-radius:3px;}"
+            "QComboBox QAbstractItemView{font-size:11px;}")
+        axial_btns_layout.addWidget(self.axial_mode_combo)
+        self.axial_start_btn = QPushButton("开始轴向测试")
+        self.axial_start_btn.clicked.connect(self._toggle_axial_collection)
+        self.axial_start_btn.setStyleSheet(
+            "QPushButton{background:#00796B;color:white;font-weight:bold;border-radius:4px;padding:3px 8px;}"
+            "QPushButton:disabled{background:#ccc;color:#888;}"
+        )
+        self.axial_save_btn = QPushButton("记录数据")
+        self.axial_save_btn.clicked.connect(self._axial_record_data)
+        self.axial_save_btn.setStyleSheet(
+            "QPushButton{background:#009688;color:white;font-weight:bold;border-radius:4px;padding:3px 8px;}"
+        )
+        # 开始测试和保存Excel按钮不强制与下方对齐，按 preferred size 排列
+        axial_btns_layout.addWidget(self.axial_start_btn)
+        axial_btns_layout.addWidget(self.axial_save_btn)
+        axial_layout.addLayout(axial_btns_layout)
+        axial_layout.setAlignment(axial_btns_layout, Qt.AlignmentFlag.AlignLeft)
+
+        # 示意图：已取消显示
+
+        # 每列上方的标题行（保存按钮作为列标题，从第2列开始）
+        self.axial_save_btns_layout = QHBoxLayout()
+        self.axial_save_btns_layout.setSpacing(0)
+        self.axial_save_btns_layout.setContentsMargins(0, 0, 0, 0)
+        axial_layout.addLayout(self.axial_save_btns_layout)
+        # 第1列上方显示列标题（轴向=高度，径向=位置）
+        self.axial_col0_header = QLabel("高度")
+        self.axial_col0_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.axial_col0_header.setFixedHeight(22)
+        self.axial_col0_header.setStyleSheet(
+            "background:#f0f0f0;color:#333333;font-size:11px;font-weight:bold;"
+            "border:1px solid #dddddd;border-radius:3px;padding:1px;")
+        self.axial_save_btns_layout.addWidget(self.axial_col0_header, stretch=1)
+
+        # 结果表格：横坐标=高度(各列为一个高度)，纵坐标=高度/F-avg/M-avg 三行
+        # 行0=高度(mm)可编辑，行1=F-avg，行2=M-avg
+        self.axial_table = QTableWidget(3, 1)
+        # 隐藏垂直表头与水平表头（保存按钮作为列标题）
+        self.axial_table.verticalHeader().setVisible(False)
+        self.axial_table.horizontalHeader().setVisible(False)
+        # 第0列作为行标签列：行0留空（标题在按钮行），行1=F-avg、行2=M-avg（不可编辑）
+        blank = QTableWidgetItem("")
+        blank.setFlags(blank.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.axial_table.setItem(0, 0, blank)
+        for r, label in enumerate(["F-avg", "M-avg"], start=1):
+            it = QTableWidgetItem(label)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            it.setBackground(QColor("#f0f0f0"))
+            it.setForeground(QColor("#333333"))
+            self.axial_table.setItem(r, 0, it)
+        # 表格样式：白底
+        self.axial_table.setStyleSheet(
+            "QTableWidget{background:#ffffff;border:1px solid #dddddd;border-radius:4px;"
+            "gridline-color:#eeeeee;font-size:11px;}"
+            "QTableWidget::item{padding:3px;}")
+        self.axial_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.axial_table.horizontalHeader().setDefaultSectionSize(28)
+        # 高度 = 3行单元格高（隐藏表头后不再加表头高度）
+        self.axial_table.verticalHeader().setDefaultSectionSize(28)
+        self.axial_table.setFixedHeight(
+            self.axial_table.verticalHeader().defaultSectionSize() * 3 + 4)
+        self.axial_table.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        # 监听高度单元格编辑，自动补 mm 单位
+        self.axial_table.cellChanged.connect(self._axial_on_height_edited)
+        axial_layout.addWidget(self.axial_table)
+
+        # 轴向列数据：[{height: float, save_btn: QPushButton, col: int}]
+        self.axial_columns = []
+        # 默认4列（0/10/20/30mm），每列上方都有保存按钮
+        for h in [0.0, 10.0, 20.0, 30.0]:
+            self._axial_add_height_column(h, add_save_btn=True)
+
+        # 轴向测试外框容器加入测试模式布局（手动测试下方）
+        temp_ctrl_layout.addWidget(self.axial_group)
+
+        top_left_layout.addWidget(self.temp_ctrl_group)
+        self.temp_ctrl_group.toggled.connect(self._redistribute_left_splitter)
 
         # 温度源控制区域加入顶部容器
         # （温度源控制组的创建在 init_ui 前半段已完成，此处补充）
@@ -1963,13 +2075,33 @@ class DataCollectorApp(QMainWindow):
         self.left_splitter.addWidget(top_left_widget)
         self.left_splitter.setCollapsible(0, False)
 
-        # 绘图区域（可折叠）
-        plot_group = CollapsibleGroupBox("实时数据曲线")
-        plot_group.toggled.connect(self._redistribute_left_splitter)
-        self.left_splitter.addWidget(plot_group)
+        # 左侧垂直分割器：上部(设备+温度源) ｜ 下部(实时数据显示)
+        self.left_splitter.addWidget(top_left_widget)
+        self.left_splitter.setCollapsible(0, False)
+
+        # 实时数据显示区域（可折叠，放入左侧下部）
+        legend_group = CollapsibleGroupBox("实时数据显示")
+        legend_group.toggled.connect(self._redistribute_left_splitter)
+        legend_inner_layout = legend_group.contentLayout()
+        self.legend_widget = CustomLegendWidget()
+        self.legend_widget.setMinimumWidth(300)
+        legend_inner_layout.addWidget(self.legend_widget)
+        self.left_splitter.addWidget(legend_group)
         self.left_splitter.setCollapsible(1, False)
         self.left_splitter.setStretchFactor(0, 0)  # 上部不拉伸
         self.left_splitter.setStretchFactor(1, 1)  # 下部拉伸
+
+        self.ts_query_thread = None
+        self.ts_const1210_query_thread = None
+
+        # 右侧面板：实时数据曲线（全部高度）
+        right_panel = QWidget()
+        right_panel.setStyleSheet("background-color: transparent;")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(5)
+
+        plot_group = CollapsibleGroupBox("实时数据曲线")
         plot_layout = plot_group.contentLayout()
 
         plot_container = QWidget()
@@ -1978,33 +2110,20 @@ class DataCollectorApp(QMainWindow):
         self.plot_widget.setBackground('#fafafa')
         pcl.addWidget(self.plot_widget)
         plot_layout.addWidget(plot_container)
-
-        # 右侧面板：实时数据显示（全部高度）
-        right_panel = QWidget()
-        right_panel.setStyleSheet("background-color: transparent;")
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(5)
-
-        self.ts_query_thread = None
-        self.ts_const1210_query_thread = None
-
-        legend_group = CollapsibleGroupBox("实时数据显示")
-        legend_inner_layout = legend_group.contentLayout()
-        self.legend_widget = CustomLegendWidget()
-        self.legend_widget.setMinimumWidth(400)
-        legend_inner_layout.addWidget(self.legend_widget)
-        right_layout.addWidget(legend_group)
+        right_layout.addWidget(plot_group)
 
         # 主水平分割器
         self.main_splitter.addWidget(left_panel)
         self.main_splitter.addWidget(right_panel)
         self.main_splitter.setCollapsible(0, False)
         self.main_splitter.setCollapsible(1, False)
-        self.main_splitter.setStretchFactor(0, 1)
+        # 左侧不拉伸，右侧拉伸：保证窗口变大时曲线区优先增大
+        self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        # 设置初始大小
-        self.main_splitter.setSizes([1000, 800])
+        # 设置初始大小：左侧(设备+显示)较小，右侧(曲线)较大
+        self.main_splitter.setSizes([500, 1300])
+        # 仅当用户手动拖动分隔条时保存比例
+        self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
         # 设置最小宽度，防止遮挡
         left_panel.setMinimumWidth(300)
         right_panel.setMinimumWidth(200)
@@ -2033,9 +2152,9 @@ class DataCollectorApp(QMainWindow):
     def _update_collect_btn(self):
         """根据采集状态更新采集按钮"""
         if self.test_running:
-            self._set_btn_style(self.collect_btn, "停止采集", "#f44336")
+            self._set_btn_style(self.collect_btn, "停止测试", "#f44336")
         else:
-            self._set_btn_style(self.collect_btn, "开始采集", "#4CAF50")
+            self._set_btn_style(self.collect_btn, "开始测试", "#4CAF50")
         self.collect_btn.setEnabled(True)
         # 记录数据按钮：仅在采集进行中可用
         if hasattr(self, 'record_btn'):
@@ -2050,20 +2169,36 @@ class DataCollectorApp(QMainWindow):
         self.serial_btn.setEnabled(True)
 
     def _update_ts_btn(self, started=False):
-        """根据温度源状态更新启动/停止控制按钮"""
+        """根据温度源状态更新开启/关闭控制按钮"""
         if started:
-            self._set_btn_style(self.ts_btn, "停止控制", "#f44336")
+            self._set_btn_style(self.ts_btn, "关闭", "#f44336")
         else:
-            self._set_btn_style(self.ts_btn, "启动控制", "#4CAF50")
+            self._set_btn_style(self.ts_btn, "开启", "#4CAF50")
         self.ts_btn.setEnabled(True)
 
     def _update_seq_btn(self):
         """根据顺序测试运行状态更新顺序测试按钮"""
-        if self.sequential_running:
+        if self.sequential_running and self.sequential_mode == 'forward':
             self._set_btn_style(self.seq_btn, "停止顺序", "#f44336")
         else:
             self._set_btn_style(self.seq_btn, "顺序测试", "#9C27B0")
         self.seq_btn.setEnabled(True)
+
+    def _update_loop_btn(self):
+        """根据循环测试运行状态更新循环测试按钮"""
+        if self.sequential_running and self.sequential_mode == 'loop':
+            self._set_btn_style(self.loop_btn, "停止循环", "#f44336")
+        else:
+            self._set_btn_style(self.loop_btn, "循环测试", "#FF9800")
+        self.loop_btn.setEnabled(True)
+
+    def _update_reverse_btn(self):
+        """根据倒序测试运行状态更新倒序测试按钮"""
+        if self.sequential_running and self.sequential_mode == 'reverse':
+            self._set_btn_style(self.reverse_btn, "停止倒序", "#f44336")
+        else:
+            self._set_btn_style(self.reverse_btn, "倒序测试", "#607D8B")
+        self.reverse_btn.setEnabled(True)
 
     def _toggle_collection(self):
         """切换采集开始/停止"""
@@ -2071,6 +2206,127 @@ class DataCollectorApp(QMainWindow):
             self.stop_collection()
         else:
             self.start_collection()
+
+    def _toggle_axial_collection(self):
+        """切换轴向/径向测试采集。文件名 sp-{axis/radial}-时间.xlsx，功能同手动测试开始测试"""
+        mode_cn = "径向" if self.axial_mode == 'radial' else "轴向"
+        file_tag = "radial" if self.axial_mode == 'radial' else "axis"
+        if self.test_running:
+            self.stop_collection()
+            self.axial_start_btn.setText(f"开始{mode_cn}测试")
+            self._current_mode_tag = None
+        else:
+            self.start_collection(mode_tag=file_tag)
+            self.axial_start_btn.setText(f"停止{mode_cn}测试")
+
+    def _axial_record_data(self):
+        """轴向/径向测试的"记录数据"：保存到 test data 目录，文件名与自动保存一致。
+        sp-axis-时间.xlsx 或 sp-radial-时间.xlsx。不弹文件对话框。"""
+        try:
+            if not self.test_running:
+                QMessageBox.warning(self, "警告", "请先开始测试后再记录数据")
+                return
+            has_data = any(len(self.data_buffer[i]) > 0 for i in range(self._dev_row_count))
+            if not has_data:
+                QMessageBox.warning(self, "警告", "无数据可保存")
+                return
+            # 文件名：sp-axis-时间 / sp-radial-时间（与自动保存一致）
+            temp_str = self.get_filename_temp_str()
+            if temp_str == 'NA':
+                try:
+                    temp_str = f"{float(self.current_test_temp):.1f}"
+                except (TypeError, ValueError):
+                    temp_str = 'NA'
+            file_tag = 'radial' if self.axial_mode == 'radial' else 'axis'
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_name = f"{temp_str}-{file_tag}-{ts}.xlsx"
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            save_dir = os.path.join(script_dir, "test data")
+            os.makedirs(save_dir, exist_ok=True)
+            filepath = os.path.join(save_dir, base_name)
+            # 直接调用自动保存逻辑，但写入指定文件
+            self._save_to_file(filepath)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"记录数据失败：{str(e)}")
+
+    def _save_to_file(self, filepath):
+        """将当前实时数据 + stability + 轴向/径向结果写入指定 Excel 文件。"""
+        try:
+            has_data = any(len(self.data_buffer[i]) > 0 for i in range(self._dev_row_count))
+            if not has_data:
+                return
+            max_len = max((len(self.datetime_buffer[i]) for i in range(self._dev_row_count) if self.devices[i]['enabled']), default=0)
+            df = pd.DataFrame()
+            times = None
+            for i in range(self._dev_row_count):
+                if self.devices[i]['enabled'] and len(self.datetime_buffer[i]) > 0:
+                    times = [x.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] for x in self.datetime_buffer[i]]
+                    break
+            if times:
+                if len(times) < max_len:
+                    times += [''] * (max_len - len(times))
+                else:
+                    times = times[:max_len]
+                df["采集时间"] = times
+            for i in range(self._dev_row_count):
+                if self.devices[i]['enabled']:
+                    name = self.devices[i]['name']
+                    unit = self.device_quantity_info.get(i, {}).get('unit', '°C')
+                    col_name = f"{name} ({unit})" if unit else name
+                    data = list(self.data_buffer[i])[:max_len]
+                    while len(data) < max_len:
+                        data.append(None)
+                    df[col_name] = data
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='实时数据', index=False)
+                if self.auto_test_summary:
+                    pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
+            # 轴向/径向结果写入对应 sheet（axis / radial）
+            if getattr(self, 'axial_data', None):
+                self._save_axis_sheet_to(filepath)
+            QMessageBox.information(self, "成功", f"数据已记录至：{filepath}")
+            self.status_label.setText(f"数据已记录: {filepath}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"保存失败：{str(e)}")
+
+    def _save_axis_sheet_to(self, filepath):
+        """将轴向/径向结果写入指定文件的 axis/radial sheet（不弹窗）。"""
+        if not self.axial_data:
+            return
+        from openpyxl import load_workbook
+        sheet_name = 'radial' if self.axial_mode == 'radial' else 'axis'
+        data = {'指标': ['F-avg', 'M-avg']}
+        for c in self.axial_columns:
+            mode = c.get('mode', self.axial_mode)
+            item0 = self.axial_table.item(0, c['col'])
+            cell_text = str(item0.text()).strip() if item0 else ''
+            if mode == 'axial':
+                try:
+                    key = round(float(cell_text.replace('mm', '').strip()), 1)
+                except (TypeError, ValueError):
+                    key = c['key']
+                col_label = f"{key:.1f}mm"
+            else:
+                key = cell_text or c['key']
+                col_label = str(key)
+            rec = self.axial_data.get(c['key'], {})
+            data[col_label] = [
+                None if rec.get('F') is None else round(rec['F'], 4),
+                None if rec.get('M') is None else round(rec['M'], 4),
+            ]
+        df = pd.DataFrame(data)
+        wb = load_workbook(filepath)
+        if sheet_name in wb.sheetnames:
+            del wb[sheet_name]
+        ws = wb.create_sheet(sheet_name)
+        ws.append(list(df.columns))
+        for _, row in df.iterrows():
+            ws.append([None if pd.isna(v) else v for v in row.tolist()])
+        wb.save(filepath)
 
     def _toggle_serial(self):
         """切换串口开/关"""
@@ -2104,6 +2360,23 @@ class DataCollectorApp(QMainWindow):
         if self.sequential_running:
             self._stop_sequential_test()
         else:
+            self.sequential_mode = 'forward'
+            self._start_sequential_test()
+
+    def _toggle_loop(self):
+        """切换循环测试开始/停止"""
+        if self.sequential_running:
+            self._stop_sequential_test()
+        else:
+            self.sequential_mode = 'loop'
+            self._start_sequential_test()
+
+    def _toggle_reverse(self):
+        """切换倒序测试开始/停止"""
+        if self.sequential_running:
+            self._stop_sequential_test()
+        else:
+            self.sequential_mode = 'reverse'
             self._start_sequential_test()
 
     def _update_sched_btn(self):
@@ -2239,6 +2512,8 @@ class DataCollectorApp(QMainWindow):
                                            symbolPen=pg.mkPen(color, width=0.5))
             self.curves[dev_id] = curve
             self.device_viewboxes[dev_id] = self.primary_plot.vb
+            # 根据曲线勾选状态设置初始可见性
+            curve.setVisible(self.devices[dev_id].get('curve_visible', True))
 
         self.quantity_viewbox_map[primary_qt] = self.primary_plot.vb
 
@@ -2304,6 +2579,8 @@ class DataCollectorApp(QMainWindow):
                 vb.addItem(curve)
                 self.curves[dev_id] = curve
                 self.device_viewboxes[dev_id] = vb
+                # 根据曲线勾选状态设置初始可见性
+                curve.setVisible(self.devices[dev_id].get('curve_visible', True))
 
         # 处理ViewBox大小同步，确保多Y轴对齐且不交叠
         def update_views():
@@ -2350,6 +2627,8 @@ class DataCollectorApp(QMainWindow):
         # 实时显示/隐藏图例
         if hasattr(self, 'legend_widget'):
             self.legend_widget.set_device_visible(dev_id, enabled)
+        # 实时同步曲线显示（启用状态变化立即反映到曲线）
+        self._update_curve_visibility()
         # 在采集过程中，动态启停设备线程
         if self.test_running and was_enabled != enabled:
             if enabled:
@@ -2806,6 +3085,8 @@ class DataCollectorApp(QMainWindow):
         self._update_serial_btn(False)
         self._update_ts_btn(False)
         self._update_seq_btn()
+        self._update_loop_btn()
+        self._update_reverse_btn()
         self.status_label.setText("温度源连接已关闭")
 
     def _update_serial_button_state(self, connected):
@@ -2814,37 +3095,31 @@ class DataCollectorApp(QMainWindow):
         self._update_serial_btn(connected)
         self.ts_btn.setEnabled(connected and not self.sequential_running)
         self.seq_btn.setEnabled(connected and not self.sequential_running)
+        self.loop_btn.setEnabled(connected and not self.sequential_running)
+        self.reverse_btn.setEnabled(connected and not self.sequential_running)
+        # 发送按钮：未通信时置灰
+        if hasattr(self, 'ts_manual_sp_btn'):
+            self.ts_manual_sp_btn.setEnabled(connected)
+        for sb in getattr(self, 'row_send_btns', []):
+            sb.setEnabled(connected)
         self._update_sched_btn()
         if connected:
-            if not is_const1210:
-                self.ts_main_temp_label.setText("Main:--°C")
-                self.ts_sec_temp_label.setText("Sec:--°C")
-                # 启动后台温度查询线程（不阻塞主线程、不争抢设备线程串口锁）
-                if self.ts_query_thread is None and self.temp_source_manager is not None:
-                    self.ts_query_thread = TemperatureQueryThread(self.temp_source_manager, device_type=self._ts_device_type)
-                    self.ts_query_thread.temp1_ready.connect(lambda t: self.ts_main_temp_label.setText(f"Main:{t:.2f}°C"))
-                    self.ts_query_thread.temp2_ready.connect(lambda t: self.ts_sec_temp_label.setText(f"Sec:{t:.2f}°C"))
-                    self.ts_query_thread.start()
-            else:
+            if is_const1210:
                 # Const 1210: 启动温度查询线程（MEASure:TEMPerature?）
                 self.ts_const1210_temp_label.setText("Temp:--°C")
                 if self.ts_const1210_query_thread is None and self.temp_source_manager is not None:
                     self.ts_const1210_query_thread = Const1210QueryThread(self.temp_source_manager)
                     self.ts_const1210_query_thread.temp_ready.connect(lambda t: self.ts_const1210_temp_label.setText(f"Temp:{t:.2f}°C"))
                     self.ts_const1210_query_thread.start()
+            # Fluke 9250：不显示温度读数
         else:
             # 断开：仅停止当前设备的查询线程
-            if not is_const1210:
-                if self.ts_query_thread is not None:
-                    self.ts_query_thread.stop()
-                    self.ts_query_thread = None
-                self.ts_main_temp_label.setText("Main:--°C")
-                self.ts_sec_temp_label.setText("Sec:--°C")
-            else:
+            if is_const1210:
                 if self.ts_const1210_query_thread is not None:
                     self.ts_const1210_query_thread.stop()
                     self.ts_const1210_query_thread = None
                 self.ts_const1210_temp_label.setText("Temp:--°C")
+            # Fluke 9250：不显示温度读数
 
     def _open_temp_source_serial(self):
         """获取温度源管理器（支持串口或LAN连接）"""
@@ -2948,6 +3223,9 @@ class DataCollectorApp(QMainWindow):
 
         for cmd_base, val, label, is_numeric in params:
             if is_numeric:
+                # 值为 None 表示留空（使用温度源默认值），跳过该条发送
+                if val is None:
+                    continue
                 ok = self._send_and_verify_cmd(
                     set_cmd=f"{cmd_base} {val}\r\n",
                     query_cmd=f"{cmd_base}?\r\n",
@@ -2976,37 +3254,85 @@ class DataCollectorApp(QMainWindow):
                 return False
         return True
 
+    def _send_manual_sp(self):
+        """发送温度源通信区的 SP 输入框设定值（SOUR:USER:SPO）
+           需先点击「通信」建立连接后才能发送"""
+        if not self.temp_source_connected or self.temp_source_manager is None:
+            QMessageBox.warning(self, "提示", "请先点击「通信」连接温度源后再发送")
+            return
+        sp = self.ts_manual_sp_spin.value()
+        if self._ts_device_type == 'Const 1210':
+            ok = self._send_and_verify_cmd(
+                set_cmd=f"SOUR:USER:SPO {sp}\r\n",
+                query_cmd="SOUR:USER:SPO?\r\n",
+                expected_value=sp,
+                label="SP"
+            )
+        else:
+            # Fluke 9250 使用 SOUR:USER:SPO（SP 设置）
+            ok = self._send_and_verify_cmd(
+                set_cmd=f"SOUR:USER:SPO {sp}\r\n",
+                query_cmd="SOUR:USER:SPO?\r\n",
+                expected_value=sp,
+                label="SP"
+            )
+        if ok:
+            self.status_label.setText(f"SP 设置成功: {sp}°C")
+            msg = f"SP 发送成功: {sp}°C"
+            print(f"[发送] {msg}")
+            if hasattr(self, 'legend_widget'):
+                self.legend_widget.append_terminal(msg)
+            # 手动测试 SP 发送成功弹框提示（自动测试不弹框）
+            QMessageBox.information(self, "成功", f"SP 设置成功: {sp}°C")
+        else:
+            self.status_label.setText("SP 发送失败")
+            print("[发送] SP 发送失败")
+            if hasattr(self, 'legend_widget'):
+                self.legend_widget.append_terminal("SP 发送失败")
+
     def _send_row_command(self, row_idx):
         """发送指定行的所有参数到温度源：SP、Main、Sec、PID、Weight 并启动输出。
-           支持 Const 1210 与 Fluke 9250。"""
+           支持 Const 1210 与 Fluke 9250。
+           注意：行勾选框仅用于是否参与自动测试，不影响本方法（手动发送不受勾选限制）。
+           需先点击「通信」建立连接后才能发送。"""
         if row_idx < 0 or row_idx >= self._ts_row_count:
             return
-        if not self.row_checks[row_idx].isChecked():
-            self.status_label.setText(f"行{row_idx+1} 未勾选，已跳过发送")
-            return
 
-        if not self._ensure_temp_source_open():
+        if not self.temp_source_connected or self.temp_source_manager is None:
+            QMessageBox.warning(self, "提示", "请先点击「通信」连接温度源后再发送")
             return
 
         sp = self.row_setpoint_spins[row_idx].value()
         main_val = self.row_main_spins[row_idx].value()
         sec_val = self.row_sec_spins[row_idx].value()
+        if sp is None:
+            QMessageBox.warning(self, "提示", f"行{row_idx+1} SP 未填写，请填写后再发送")
+            return
         is_const1210 = (self._ts_device_type == 'Const 1210')
 
         if is_const1210:
             self.status_label.setText(f"行{row_idx+1}: SP={sp}°C - 发送温度...")
             QApplication.processEvents()
             ok = self._send_and_verify_cmd(
-                set_cmd=f"TEMPerature:STATus:CONTrol {sp},1001\r\n",
-                query_cmd="TEMPerature:TARGet?\r\n",
+                set_cmd=f"SOUR:USER:SPO {sp}\r\n",
+                query_cmd="SOUR:USER:SPO?\r\n",
                 expected_value=sp,
                 label=f"行{row_idx+1} Const 1210"
             )
             if ok:
                 self._update_ts_btn(True)
                 self.status_label.setText(f"行{row_idx+1} 命令已发送 (SP={sp}°C)")
+                msg = f"行{row_idx+1} SP命令发送成功: SP={sp}°C"
+                print(f"[发送] {msg}")
+                if hasattr(self, 'legend_widget'):
+                    self.legend_widget.append_terminal(msg)
+                # 手动点击行发送按钮成功后弹框提示
+                QMessageBox.information(self, "成功", f"行{row_idx+1} SP 设置成功: {sp}°C")
             else:
                 self.status_label.setText(f"行{row_idx+1} 命令发送失败")
+                print(f"[发送] 行{row_idx+1} SP命令发送失败")
+                if hasattr(self, 'legend_widget'):
+                    self.legend_widget.append_terminal(f"行{row_idx+1} SP命令发送失败")
             return
 
         # ---- Fluke 9250 ----
@@ -3014,42 +3340,51 @@ class DataCollectorApp(QMainWindow):
         QApplication.processEvents()
         if not self._send_pid_params(row_idx):
             self.status_label.setText(f"行{row_idx+1} PID 参数发送失败")
+            print(f"[发送] 行{row_idx+1} PID 参数发送失败")
+            if hasattr(self, 'legend_widget'):
+                self.legend_widget.append_terminal(f"行{row_idx+1} PID 参数发送失败")
             return
 
         self.status_label.setText(f"行{row_idx+1}: 设置温度={sp}°C, Main={main_val}, Sec={sec_val}...")
         QApplication.processEvents()
-        ok = self._send_and_verify_cmd(
-            set_cmd=f"SOUR:MAIN:SPO {main_val}\r\n",
-            query_cmd="SOUR:MAIN:SPO?\r\n",
-            expected_value=main_val,
-            label=f"行{row_idx+1} Main"
-        )
-        if not ok:
-            self.status_label.setText(f"行{row_idx+1} Main 发送失败")
-            return
+        # Main 为默认值（留空）时不发送
+        if main_val is not None:
+            ok = self._send_and_verify_cmd(
+                set_cmd=f"SOUR:MAIN:SPO {main_val}\r\n",
+                query_cmd="SOUR:MAIN:SPO?\r\n",
+                expected_value=main_val,
+                label=f"行{row_idx+1} Main"
+            )
+            if not ok:
+                self.status_label.setText(f"行{row_idx+1} Main 发送失败")
+                print(f"[发送] 行{row_idx+1} Main 发送失败")
+                if hasattr(self, 'legend_widget'):
+                    self.legend_widget.append_terminal(f"行{row_idx+1} Main 发送失败")
+                return
 
-        ok = self._send_and_verify_cmd(
-            set_cmd=f"SOUR:SEC:SPO {sec_val}\r\n",
-            query_cmd="SOUR:SEC:SPO?\r\n",
-            expected_value=sec_val,
-            label=f"行{row_idx+1} Sec"
-        )
-        if not ok:
-            self.status_label.setText(f"行{row_idx+1} Sec 发送失败")
-            return
-
-        ok = self._send_and_verify_cmd(
-            set_cmd=b"OUTP:STAT 1\r\n",
-            query_cmd=b"OUTP:STAT?\r\n",
-            expected_value=1,
-            label=f"行{row_idx+1} 启动"
-        )
-        if not ok:
-            self.status_label.setText(f"行{row_idx+1} 启动失败")
-            return
-
+        # Sec 为默认值（留空）时不发送
+        if sec_val is not None:
+            ok = self._send_and_verify_cmd(
+                set_cmd=f"SOUR:SEC:SPO {sec_val}\r\n",
+                query_cmd="SOUR:SEC:SPO?\r\n",
+                expected_value=sec_val,
+                label=f"行{row_idx+1} Sec"
+            )
+            if not ok:
+                self.status_label.setText(f"行{row_idx+1} Sec 发送失败")
+                print(f"[发送] 行{row_idx+1} Sec 发送失败")
+                if hasattr(self, 'legend_widget'):
+                    self.legend_widget.append_terminal(f"行{row_idx+1} Sec 发送失败")
+                return
+        # SP 发送按钮不关联启动：不发送 OUTP:STAT 1（启动由「开启」按钮控制）
         self._update_temp_source_ui_state()
         self.status_label.setText(f"行{row_idx+1} 命令已发送 (SP={sp}°C, M={main_val}, S={sec_val})")
+        msg = f"行{row_idx+1} SP命令发送成功: SP={sp}°C"
+        print(f"[发送] {msg}")
+        if hasattr(self, 'legend_widget'):
+            self.legend_widget.append_terminal(msg)
+        # 手动点击行发送按钮成功后弹框提示
+        QMessageBox.information(self, "成功", f"行{row_idx+1} SP 设置成功: {sp}°C")
 
     def temp_source_start(self):
         """启动温度源输出：先发送并验证 PID 参数，再发送 OUTP:STAT 1
@@ -3067,24 +3402,23 @@ class DataCollectorApp(QMainWindow):
                 return
 
         if is_const1210:
-            # Const 1210: 发送 TEMPerature:STATus:CONTrol <sp>,1001 设定温度(1001=°C)
+            # Const 1210: 发送 SOUR:USER:SPO <sp> 设定温度，问询 SOUR:USER:SPO?
+            # 始终用第一行作为 SP 来源，不受勾选状态影响
             pid_row = 0
-            for r in range(self._ts_row_count):
-                if self.row_checks[r].isChecked():
-                    pid_row = r
-                    break
             sp = self.row_setpoint_spins[pid_row].value()
 
             self.status_label.setText(f"Const 1210: 设定温度={sp}°C...")
             QApplication.processEvents()
             ok = self._send_and_verify_cmd(
-                set_cmd=f"TEMPerature:STATus:CONTrol {sp},1001\r\n",
-                query_cmd="TEMPerature:TARGet?\r\n",
+                set_cmd=f"SOUR:USER:SPO {sp}\r\n",
+                query_cmd="SOUR:USER:SPO?\r\n",
                 expected_value=sp,
                 label="Const 1210启动"
             )
             self._update_temp_source_ui_state()
             self.seq_btn.setEnabled(True)
+            self.loop_btn.setEnabled(True)
+            self.reverse_btn.setEnabled(True)
             if ok:
                 self.status_label.setText("Const 1210 温度源已启动")
             else:
@@ -3092,12 +3426,8 @@ class DataCollectorApp(QMainWindow):
             return
 
         # ---- Fluke 9250 原有逻辑 ----
-        # 1) 发送并验证第一行（或第一个勾选行）的 PID 参数
+        # 1) 发送并验证第一行的 PID 参数（不受勾选状态影响）
         pid_row = 0
-        for r in range(self._ts_row_count):
-            if self.row_checks[r].isChecked():
-                pid_row = r
-                break
         self.status_label.setText(f"设置行{pid_row+1} PID 参数...")
         QApplication.processEvents()
         if not self._send_pid_params(pid_row):
@@ -3117,6 +3447,8 @@ class DataCollectorApp(QMainWindow):
         self._update_temp_source_ui_state()
         # 顺序测试结束后，重新启用顺序测试按钮
         self.seq_btn.setEnabled(True)
+        self.loop_btn.setEnabled(True)
+        self.reverse_btn.setEnabled(True)
         if ok:
             self.status_label.setText("温度源已启动")
         else:
@@ -3169,7 +3501,9 @@ class DataCollectorApp(QMainWindow):
         self.sched_time_edit.setEnabled(True)
         self._update_ts_btn(False)
         self._update_seq_btn()
-        self.status_label.setText("顺序测试已手动停止")
+        self._update_loop_btn()
+        self._update_reverse_btn()
+        self.status_label.setText("测试已手动停止")
 
     def _start_sequential_test(self):
         """开始顺序测试：逐行设置温度、采集、停止、等待间隔后继续下一行"""
@@ -3189,23 +3523,38 @@ class DataCollectorApp(QMainWindow):
             QMessageBox.warning(self, "警告", "请先勾选需要测试的行")
             return
 
+        # 根据模式构建行执行顺序
+        # forward顺序：0,1,2,...   reverse倒序：n-1,n-2,...,0
+        # loop循环：0,1,2,...,n-1,n-2,...,1（往返一遍）
+        if self.sequential_mode == 'reverse':
+            self.seq_row_order = list(reversed(valid_rows))
+        elif self.sequential_mode == 'loop':
+            self.seq_row_order = valid_rows + list(reversed(valid_rows[:-1]))
+        else:
+            self.seq_row_order = list(valid_rows)
+
         self.sequential_running = True
-        self.sequential_current_row = 0
+        self.sequential_current_row = self.seq_row_order[0]
+        self.seq_step = 0
         self.sequential_test_complete = False
         # 顺序测试文件名采用 setpoint 温度（非实时值）
         self._seq_naming_setpoint = True
 
         # 切换按钮状态
         self._update_ts_btn(True)
-        self._set_btn_style(self.seq_btn, "停止顺序", "#f44336")
-        self.seq_btn.setEnabled(True)
+        self._update_seq_btn()
+        self._update_loop_btn()
+        self._update_reverse_btn()
         self._update_sched_btn()
         self.sched_time_edit.setEnabled(False)
 
         # 启动顺序测试定时器（每秒检查一次）
         self.sequential_timer.start(1000)
 
-        self.status_label.setText(f"顺序测试启动，共 {len(valid_rows)} 个设定点")
+        mode_name = {"forward": "顺序测试", "reverse": "倒序测试", "loop": "循环测试"}.get(self.sequential_mode, "测试")
+        self.status_label.setText(f"{mode_name}启动，共 {len(self.seq_row_order)} 个设定点")
+        if hasattr(self, 'legend_widget'):
+            self.legend_widget.append_terminal(f"{mode_name}启动，共 {len(self.seq_row_order)} 个设定点")
         # 开始第一行
         self._start_current_row()
 
@@ -3247,6 +3596,8 @@ class DataCollectorApp(QMainWindow):
             self.sched_test_armed = False
             self.sched_test_timer.stop()
             self.sched_status_label.setText("定时测试执行中...")
+            # 定时测试使用顺序模式
+            self.sequential_mode = 'forward'
             # _start_sequential_test 内部会自动处理串口连接和温度源启动
             self._start_sequential_test()
         elif remain_secs < 60:
@@ -3264,24 +3615,28 @@ class DataCollectorApp(QMainWindow):
             self.status_label.setText("温度源串口已断开，尝试重新连接...")
             QApplication.processEvents()
             if not self._open_temp_source_serial():
-                self.status_label.setText("温度源串口重连失败，停止顺序测试")
+                self.status_label.setText("温度源串口重连失败，停止测试")
                 self.sequential_running = False
                 self._update_seq_btn()
+                self._update_loop_btn()
+                self._update_reverse_btn()
                 return
 
         row = self.sequential_current_row
         if row >= self._ts_row_count:
             # 所有行都已完成
-            self.status_label.setText("顺序测试全部完成")
+            self.status_label.setText("测试全部完成")
             self.temp_source_stop()
             self.sequential_running = False
             self._update_seq_btn()
+            self._update_loop_btn()
+            self._update_reverse_btn()
             return
 
         # 跳过未勾选的行
         if not self.row_checks[row].isChecked():
-            self.sequential_current_row += 1
-            self._start_current_row()
+            if self._advance_seq_step():
+                self._start_current_row()
             return
 
         sp = self.row_setpoint_spins[row].value()
@@ -3289,8 +3644,8 @@ class DataCollectorApp(QMainWindow):
         sec_val = self.row_sec_spins[row].value()
         if sp <= 0:
             # 该行无有效设置，跳过
-            self.sequential_current_row += 1
-            self._start_current_row()
+            if self._advance_seq_step():
+                self._start_current_row()
             return
 
         # 设置当前测试温度和 Spec
@@ -3300,12 +3655,12 @@ class DataCollectorApp(QMainWindow):
         is_const1210 = (self._ts_device_type == 'Const 1210')
 
         if is_const1210:
-            # Const 1210: 发送 TEMPerature:STATus:CONTrol <sp>,1001 设定温度(1001=°C)
+            # Const 1210: 发送 SOUR:USER:SPO <sp> 设定温度，问询 SOUR:USER:SPO?
             self.status_label.setText(f"行{row+1}: SP={sp}°C - Const 1210 设置温度...")
             QApplication.processEvents()
             ok = self._send_and_verify_cmd(
-                set_cmd=f"TEMPerature:STATus:CONTrol {sp},1001\r\n",
-                query_cmd="TEMPerature:TARGet?\r\n",
+                set_cmd=f"SOUR:USER:SPO {sp}\r\n",
+                query_cmd="SOUR:USER:SPO?\r\n",
                 expected_value=sp,
                 label=f"行{row+1} Const 1210"
             )
@@ -3330,37 +3685,38 @@ class DataCollectorApp(QMainWindow):
         QApplication.processEvents()
         if not self._send_pid_params(row):
             self.status_label.setText(f"行{row+1} PID 参数设置失败，跳过该行")
-            self.sequential_current_row += 1
-            self._start_current_row()
+            if self._advance_seq_step():
+                self._start_current_row()
             return
 
         self.status_label.setText(f"行{row+1}: 设置温度={sp}°C, Main={main_val}, Sec={sec_val}...")
 
-        # 1) 发送 main 设置并回读验证
+        # 1) 发送 SP 设置并回读验证（Fluke 9250 用 SOUR:USER:SPO，与手动测试一致）
         ok = self._send_and_verify_cmd(
-            set_cmd=f"SOUR:MAIN:SPO {main_val}\r\n",
-            query_cmd="SOUR:MAIN:SPO?\r\n",
-            expected_value=main_val,
-            label=f"行{row+1} Main"
+            set_cmd=f"SOUR:USER:SPO {sp}\r\n",
+            query_cmd="SOUR:USER:SPO?\r\n",
+            expected_value=sp,
+            label=f"行{row+1} SP"
         )
         if not ok:
             self.status_label.setText(f"行{row+1} Main设置失败，跳过该行")
-            self.sequential_current_row += 1
-            self._start_current_row()
+            if self._advance_seq_step():
+                self._start_current_row()
             return
 
-        # 2) 发送 sec 设置并回读验证
-        ok = self._send_and_verify_cmd(
-            set_cmd=f"SOUR:SEC:SPO {sec_val}\r\n",
-            query_cmd="SOUR:SEC:SPO?\r\n",
-            expected_value=sec_val,
-            label=f"行{row+1} Sec"
-        )
-        if not ok:
-            self.status_label.setText(f"行{row+1} Sec设置失败，跳过该行")
-            self.sequential_current_row += 1
-            self._start_current_row()
-            return
+        # 2) 发送 sec 设置并回读验证（Sec 为默认值留空时不发送）
+        if sec_val is not None:
+            ok = self._send_and_verify_cmd(
+                set_cmd=f"SOUR:SEC:SPO {sec_val}\r\n",
+                query_cmd="SOUR:SEC:SPO?\r\n",
+                expected_value=sec_val,
+                label=f"行{row+1} Sec"
+            )
+            if not ok:
+                self.status_label.setText(f"行{row+1} Sec设置失败，跳过该行")
+                if self._advance_seq_step():
+                    self._start_current_row()
+                return
 
         # 3) 发送 OUTP:STAT 1 并回读验证
         ok = self._send_and_verify_cmd(
@@ -3371,8 +3727,8 @@ class DataCollectorApp(QMainWindow):
         )
         if not ok:
             self.status_label.setText(f"行{row+1} 启动失败，跳过该行")
-            self.sequential_current_row += 1
-            self._start_current_row()
+            if self._advance_seq_step():
+                self._start_current_row()
             return
 
         # 更新按钮状态
@@ -3524,35 +3880,51 @@ class DataCollectorApp(QMainWindow):
             else:
                 self._proceed_next_row()
 
+    def _advance_seq_step(self):
+        """按模式序列推进到下一行；返回 True 表示仍有下一行，False 表示全部完成"""
+        if not self.sequential_running:
+            return False
+        self.seq_step += 1
+        if self.seq_step < len(self.seq_row_order):
+            self.sequential_current_row = self.seq_row_order[self.seq_step]
+            return True
+        return False
+
     def _proceed_next_row(self):
         """进入下一行测试"""
         if not self.sequential_running:
             self._row_transitioning = False
             return
-        self.sequential_current_row += 1
-        if self.sequential_current_row < self._ts_row_count:
+        if self._advance_seq_step():
             self._row_transitioning = False
             self._start_current_row()
         else:
             self._row_transitioning = False
-            self.status_label.setText("顺序测试全部完成")
+            mode_name = {"forward": "顺序测试", "reverse": "倒序测试", "loop": "循环测试"}.get(self.sequential_mode, "测试")
+            self.status_label.setText(f"{mode_name}全部完成")
+            if hasattr(self, 'legend_widget'):
+                self.legend_widget.append_terminal(f"{mode_name}全部完成")
             self.temp_source_stop()
             self.sequential_running = False
             self._update_seq_btn()
+            self._update_loop_btn()
+            self._update_reverse_btn()
             self._update_sched_btn()
             self.sched_time_edit.setEnabled(True)
 
     def get_filename_temp_str(self):
-        """文件名用的温度字符串。
+        """文件名用的温度字符串（统一使用 SP 设定值，保留一位小数）。
 
-        - 顺序测试模式：使用 setpoint 温度（current_test_temp），保留一位小数。
-        - 普通采集：取第一个启用且有数据的通道的实时温度值，保留一位小数。
+        - 优先使用 current_test_temp（SP 设定值）。
+        - 若无 SP（current_test_temp 无效），回退到第一个启用且有数据的通道实时值。
         """
-        if getattr(self, '_seq_naming_setpoint', False):
-            try:
+        # SP 设定值：current_test_temp
+        try:
+            if self.current_test_temp is not None:
                 return f"{float(self.current_test_temp):.1f}"
-            except (TypeError, ValueError):
-                return 'NA'
+        except (TypeError, ValueError):
+            pass
+        # 回退：第一个启用且有数据的通道实时值
         first_temp = None
         for i in range(self._dev_row_count):
             if not self.devices[i]['enabled']:
@@ -3568,7 +3940,7 @@ class DataCollectorApp(QMainWindow):
         except (TypeError, ValueError):
             return 'NA'
 
-    def start_collection(self, temp=None):
+    def start_collection(self, temp=None, mode_tag=None):
         enabled = [d for d in self.devices if d['enabled']]
         if not enabled:
             QMessageBox.warning(self, "警告", "请至少启用一个设备")
@@ -3576,20 +3948,29 @@ class DataCollectorApp(QMainWindow):
 
         if temp is not None:
             self.current_test_temp = temp
+        elif hasattr(self, 'ts_manual_sp_spin'):
+            # 未指定 SP 时，用温度源控制的手动 SP 值作为文件名温度
+            self.current_test_temp = self.ts_manual_sp_spin.value()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 文件名温度：第一个通道实时值（保留一位小数），采集开始尚无数据时回退到当前测试温度
+        # 文件名温度：统一使用 SP 设定值（current_test_temp）
         temp_str = self.get_filename_temp_str()
         if temp_str == 'NA':
             try:
                 temp_str = f"{float(self.current_test_temp):.1f}"
             except (TypeError, ValueError):
                 temp_str = 'NA'
-        base_name = f"{temp_str}-{timestamp}.xlsx"
+        # 区分自动测试(auto)与手动测试(manual)：顺序/循环/倒序/定时测试为自动测试
+        if mode_tag is None:
+            mode_tag = 'auto' if getattr(self, 'sequential_running', False) else 'manual'
+        self._current_mode_tag = mode_tag
+        base_name = f"{temp_str}-{mode_tag}-{timestamp}.xlsx"
         # 保存到 test data 文件夹（与记录数据同一目录）
         script_dir = os.path.dirname(os.path.abspath(__file__))
         save_dir = os.path.join(script_dir, "test data")
         os.makedirs(save_dir, exist_ok=True)
         self.current_data_file = os.path.join(save_dir, base_name)
+        # 重置手动测试完成标记（开始测试时）
+        self._manual_test_done = False
         # 一开始采集就立即生成 Excel 文件（含空 sheet 结构）
         try:
             from openpyxl import Workbook
@@ -3597,7 +3978,11 @@ class DataCollectorApp(QMainWindow):
             if 'Sheet' in book.sheetnames:
                 del book['Sheet']
             book.create_sheet('实时数据')
-            book.create_sheet('通道检测')
+            book.create_sheet('stability')
+            if mode_tag == 'axis':
+                book.create_sheet('axis')
+            elif mode_tag == 'radial':
+                book.create_sheet('radial')
             book.save(self.current_data_file)
             print(f"[start_collection] 已创建 Excel: {self.current_data_file}")
         except Exception as e:
@@ -3614,6 +3999,10 @@ class DataCollectorApp(QMainWindow):
         self._auto_follow = True
         self._suppress_range_signal = False
         self._reset_auto_test_state()
+
+        # 输出采集开始程序信息到终端区
+        if hasattr(self, 'legend_widget'):
+            self.legend_widget.append_terminal(f"开始采集，数据文件:{os.path.basename(self.current_data_file)}")
 
         # 设置多Y轴绘图（根据启用的设备命令自动判断物理量）
         self.setup_multi_axis_plot()
@@ -3646,24 +4035,61 @@ class DataCollectorApp(QMainWindow):
 
     def _save_whole_window_screenshot(self, suffix):
         """截取整个软件窗口并保存到 test data 文件夹。
-        文件名：{温度}-{suffix}-{时间}.png
-        温度策略：顺序测试用 setpoint，否则第一个通道实时值（均保留一位小数）。
+        文件名：{温度}-{auto/manual}-{suffix}-{时间}.png
+        温度策略：统一使用 SP 设定值，并根据测试模式加入 auto/manual 标识。
         """
         try:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             temp_str = self.get_filename_temp_str()
+            mode_tag = getattr(self, '_current_mode_tag', None)
+            if mode_tag is None:
+                mode_tag = 'auto' if getattr(self, 'sequential_running', False) else 'manual'
             script_dir = os.path.dirname(os.path.abspath(__file__))
             save_dir = os.path.join(script_dir, "test data")
             os.makedirs(save_dir, exist_ok=True)
-            img_path = os.path.join(save_dir, f"{temp_str}-{suffix}-{ts}.png")
-            self.grab().save(img_path, 'PNG')
+            if mode_tag == 'axis':
+                # 轴向测试截图文件名：sp-axis-时间.png
+                img_path = os.path.join(save_dir, f"{temp_str}-axis-{ts}.png")
+            elif mode_tag == 'radial':
+                # 径向测试截图文件名：sp-radial-时间.png
+                img_path = os.path.join(save_dir, f"{temp_str}-radial-{ts}.png")
+            else:
+                img_path = os.path.join(save_dir, f"{temp_str}-{mode_tag}-{suffix}-{ts}.png")
+            self._save_screenshot_with_overlay(img_path, ts)
             print(f"[screenshot] 已保存整窗截图: {img_path}")
         except Exception as e:
             print(f"[screenshot] 截图失败: {e}")
 
+    def _save_screenshot_with_overlay(self, filepath, timestamp, jpg=False):
+        """截取窗口并保存，在图像顶部绘制程序版本号和当前系统时间（半透明黑底白字）"""
+        try:
+            pixmap = self.grab()
+            painter = QPainter(pixmap)
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            text = f"T-cal_tester v{APP_VERSION}    {now_str}"
+            font = QFont(font_family, 16)
+            font.setBold(True)
+            painter.setFont(font)
+            fm = QFontMetrics(font)
+            tw = fm.horizontalAdvance(text)
+            th = fm.height()
+            # 半透明黑底条
+            painter.fillRect(0, 0, tw + 20, th + 10, QColor(0, 0, 0, 140))
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(10, th + 2, text)
+            painter.end()
+            if jpg:
+                pixmap.save(filepath, 'JPG', 95)
+            else:
+                pixmap.save(filepath, 'PNG')
+        except Exception as e:
+            print(f"[截图] 保存失败: {e}")
+
     def stop_collection(self):
         self.test_running = False
         self.save_timer.stop()
+        if hasattr(self, 'legend_widget'):
+            self.legend_widget.append_terminal("停止采集")
         # 停止45分钟自动保存定时器
         if self.auto_save_timer is not None:
             self.auto_save_timer.stop()
@@ -3743,9 +4169,11 @@ class DataCollectorApp(QMainWindow):
             full_path = os.path.abspath(self.current_data_file)
             with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-                if self.auto_test_log:
-                    auto_df = pd.DataFrame(self.auto_test_log, columns=['记录时间', '通道', 'T0(min)', 'T0-T1(min)', 'T1(min)', 'T2(min)', 'T3(min)', 'Std1', 'Std2', 'Avg1(°C)', 'Avg2(°C)'])
-                    auto_df.to_excel(writer, sheet_name='通道检测', index=False)
+                if self.auto_test_summary:
+                    pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
+            # axis/radial 模式且已有轴向结果时，补写对应 sheet（ExcelWriter 重写会清掉它）
+            if getattr(self, '_current_mode_tag', '') in ('axis', 'radial') and getattr(self, 'axial_data', None):
+                self._save_axis_sheet()
             self.status_label.setText(f"数据已自动保存至: {full_path}")
             print(f"[auto_save_data] Excel已保存: {full_path}")
         except Exception as e:
@@ -3802,14 +4230,104 @@ class DataCollectorApp(QMainWindow):
                 full_path = os.path.abspath(self.current_data_file)
                 with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
                     df.to_excel(writer, sheet_name='实时数据', index=False)
-                    if self.auto_test_log:
-                        auto_df = pd.DataFrame(self.auto_test_log, columns=['记录时间', '通道', 'T0(min)', 'T0-T1(min)', 'T1(min)', 'T2(min)', 'T3(min)', 'Std1', 'Std2', 'Avg1(°C)', 'Avg2(°C)'])
-                        auto_df.to_excel(writer, sheet_name='通道检测', index=False)
+                    if self.auto_test_summary:
+                        pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
                 print(f"[应急保存] 数据已保存至: {full_path}")
             except Exception as e:
                 import traceback
                 print(f"[应急保存] 保存失败: {e}")
                 traceback.print_exc()
+
+    def _log_startup_info(self):
+        """程序启动后向终端区输出程序信息"""
+        try:
+            py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            self.legend_widget.clear_terminal()
+            self.legend_widget.append_terminal(f"T-cal_tester v{APP_VERSION} 启动完成")
+            self.legend_widget.append_terminal(f"Python {py_ver} | 系统 {platform.platform()}")
+            self.legend_widget.append_terminal(f"配置文件: {self.config_file} | 设备数: {len(self.devices)}")
+        except Exception as e:
+            print(f"[启动信息] 输出失败: {e}")
+
+    def _save_window_geometry(self):
+        """将窗口位置和大小保存到 JSON 文件（直接存 x/y/w/h 整数）"""
+        geom_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.json")
+        try:
+            data = {}
+            if os.path.exists(geom_file):
+                with open(geom_file, 'r') as f:
+                    data = json.load(f)
+            g = self.geometry()
+            data['main'] = {'x': g.x(), 'y': g.y(), 'w': g.width(), 'h': g.height()}
+            # 保存温度源控制组框的折叠状态
+            if hasattr(self, 'temp_ctrl_group'):
+                data['temp_ctrl'] = {'collapsed': self.temp_ctrl_group.is_collapsed()}
+            with open(geom_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        """窗口首次显示时恢复上次位置和大小（延迟执行，确保布局完成）"""
+        super().showEvent(event)
+        if not getattr(self, '_geometry_restored', False):
+            QTimer.singleShot(50, self._restore_window_geometry)
+            self._geometry_restored = True
+
+    def _restore_window_geometry(self):
+        """实际执行窗口几何信息恢复（在 showEvent 后延迟调用）"""
+        geom_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.json")
+        try:
+            if os.path.exists(geom_file):
+                with open(geom_file, 'r') as f:
+                    data = json.load(f)
+                # 恢复主窗口位置大小
+                if 'main' in data and isinstance(data['main'], dict):
+                    g = data['main']
+                    x, y, w, h = g.get('x', 0), g.get('y', 0), g.get('w', 0), g.get('h', 0)
+                    if w > 0 and h > 0:
+                        self.move(x, y)
+                        self.resize(w, h)
+                # 恢复温度源控制组框的折叠状态（不设固定高度，避免间距异常）
+                if hasattr(self, 'temp_ctrl_group') and 'temp_ctrl' in data:
+                    tc = data['temp_ctrl']
+                    if isinstance(tc, dict):
+                        collapsed = tc.get('collapsed', False)
+                        self.temp_ctrl_group.set_collapsed(collapsed)
+                # 恢复主分割器左右比例（左侧/右侧）
+                if hasattr(self, 'main_splitter') and 'main_split' in data:
+                    sizes = data['main_split']
+                    if isinstance(sizes, list) and len(sizes) == 2 and all(s > 0 for s in sizes):
+                        self.main_splitter.setSizes(sizes)
+            else:
+                # 首次启动：把当前打开的窗口位置作为默认大小写入
+                self._save_window_geometry()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        """窗口大小变化时保存几何信息"""
+        super().resizeEvent(event)
+        self._save_window_geometry()
+
+    def moveEvent(self, event):
+        """窗口位置变化时保存几何信息（拖动即固化为默认）"""
+        super().moveEvent(event)
+        self._save_window_geometry()
+
+    def _on_main_splitter_moved(self, pos, index):
+        """用户手动拖动主分割器时，保存左右比例到 JSON"""
+        geom_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.json")
+        try:
+            data = {}
+            if os.path.exists(geom_file):
+                with open(geom_file, 'r') as f:
+                    data = json.load(f)
+            data['main_split'] = self.main_splitter.sizes()
+            with open(geom_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
 
     def _signal_handler(self, signum, frame):
         """信号处理（SIGINT/SIGTERM）：先停温度源 → 应急保存 → 退出"""
@@ -3820,6 +4338,7 @@ class DataCollectorApp(QMainWindow):
         except:
             pass
         self.emergency_save_data()
+        self._save_window_geometry()
         sys.exit(0)
 
     def closeEvent(self, event):
@@ -3857,11 +4376,14 @@ class DataCollectorApp(QMainWindow):
         if self.ts_const1210_query_thread is not None:
             self.ts_const1210_query_thread.stop()
             self.ts_const1210_query_thread = None
+        # 保存窗口位置与大小，下次启动恢复
+        self._save_window_geometry()
         event.accept()
 
     def manual_save_data(self):
-        temp_label = f"{self.current_test_temp:g}°C" if self.sequential_running else "temp"
-        path, _ = QFileDialog.getSaveFileName(self, "保存数据", f"{temp_label}-{datetime.now():%Y%m%d_%H%M%S}.xlsx", "Excel (*.xlsx)")
+        # 文件名温度统一使用 SP 值（get_filename_temp_str），手动测试加 manual 标识
+        temp_label = self.get_filename_temp_str()
+        path, _ = QFileDialog.getSaveFileName(self, "保存数据", f"{temp_label}-manual-{datetime.now():%Y%m%d_%H%M%S}.xlsx", "Excel (*.xlsx)")
         if not path:
             return
         try:
@@ -3896,9 +4418,8 @@ class DataCollectorApp(QMainWindow):
                     df[col_name] = data
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-            if self.auto_test_log:
-                auto_df = pd.DataFrame(self.auto_test_log, columns=['记录时间', '通道', 'T0(min)', 'T0-T1(min)', 'T1(min)', 'T2(min)', 'T3(min)', 'Std1', 'Std2', 'Avg1(°C)', 'Avg2(°C)'])
-                auto_df.to_excel(writer, sheet_name='通道检测', index=False)
+                if self.auto_test_summary:
+                    pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
             QMessageBox.information(self, "成功", f"数据已保存至：{path}")
             self.status_label.setText(f"数据已手动保存至: {path}")
         except Exception as e:
@@ -3920,7 +4441,7 @@ class DataCollectorApp(QMainWindow):
             script_dir = os.path.dirname(os.path.abspath(__file__))
             dir_path = os.path.join(script_dir, "test data")
             os.makedirs(dir_path, exist_ok=True)
-            record_base = f"{temp_str}-record-{ts}"
+            record_base = f"{temp_str}-manual-{ts}"
             path = os.path.join(dir_path, f"{record_base}.xlsx")
             img_path = os.path.join(dir_path, f"{record_base}.png")
 
@@ -3951,11 +4472,10 @@ class DataCollectorApp(QMainWindow):
                 QMessageBox.warning(self, "警告", "没有启用的通道或尚无数据")
                 return
 
-            # 截图整个软件主窗口（文件：温度-record-时间.png）
+            # 截图整个软件主窗口（文件：温度-record-时间.png，顶部叠加版本号+系统时间）
             img_ok = False
             try:
-                pixmap = self.grab()
-                pixmap.save(img_path, 'PNG')
+                self._save_screenshot_with_overlay(img_path, ts)
                 img_ok = os.path.exists(img_path)
             except Exception as e:
                 img_ok = False
@@ -3993,26 +4513,17 @@ class DataCollectorApp(QMainWindow):
         self.status_label.setText("统计（波动/Min/Max/Avg）已重置")
 
     def reset_curve_display(self):
-        """重置图像：仅清空实时曲线的显示并重设视图，不影响数据缓冲区、统计与后续数据记录"""
-        # 仅清除曲线显示数据，保留 data_buffer / time_buffer / datetime_buffer / _vol_cache / current_data_file
-        for i in range(self._dev_row_count):
-            if self.curves[i] is not None:
-                try:
-                    self.curves[i].setData([], [])
-                except RuntimeError:
-                    self.curves[i] = None
-        # 恢复自动跟随视图（X 轴显示全部数据，Y 轴自动缩放）
+        """清空图像：重新绘图（重建 plot），保留数据缓冲区，随后从缓冲区重绘曲线"""
+        # 保存现有数据缓冲区，重建图像结构
+        try:
+            self.init_plots()
+        except Exception as e:
+            print(f"[清空图像] 重建绘图失败: {e}")
+        # 恢复自动跟随视图
         self._auto_follow = True
-        if hasattr(self, 'primary_plot') and self.primary_plot is not None:
-            self._suppress_range_signal = True
-            self.primary_plot.vb.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
-            self.primary_plot.vb.enableAutoRange(axis=pg.ViewBox.XAxis, enable=False)
-            for vb in getattr(self, 'extra_vb_list', []):
-                vb.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
-            self._suppress_range_signal = False
         # 强制下一帧从已有缓冲区重新绘制曲线
         self._plot_dirty = True
-        self.status_label.setText("图像已重置（仅刷新显示，不影响数据与记录）")
+        self.status_label.setText("图像已清空并重新绘图")
 
     def _reset_plot_view(self):
         """重置图形缩放视图，恢复自动缩放显示全部数据"""
@@ -4039,23 +4550,394 @@ class DataCollectorApp(QMainWindow):
     def save_current_plot(self, auto_save=False):
         """保存当前图像曲线为JPG文件"""
         try:
-            # 优先使用 current_test_temp，无效时才用 temp
-            if self.current_test_temp is not None and self.current_test_temp > 0:
-                temp_label = f"{self.current_test_temp:g}°C"
-            else:
-                temp_label = "temp"
+            # 文件名温度统一使用 SP 值（get_filename_temp_str），如 100.0-时间
+            temp_label = self.get_filename_temp_str()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{temp_label}-{timestamp}.jpg"
-            filepath = os.path.join(os.getcwd(), filename)
-            # 截取整个主窗口画面
-            pixmap = self.grab()
-            pixmap.save(filepath, 'JPG', 95)
+            filename = f"{temp_label}-manual-{timestamp}.jpg"
+            # 保存到 test data 文件夹
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            save_dir = os.path.join(script_dir, "test data")
+            os.makedirs(save_dir, exist_ok=True)
+            filepath = os.path.join(save_dir, filename)
+            # 截取整个主窗口画面，并在顶部叠加版本号+系统时间
+            self._save_screenshot_with_overlay(filepath, timestamp, jpg=True)
             if auto_save:
                 self.status_label.setText(f"曲线已自动保存: {filename}")
             else:
+                QMessageBox.information(self, "成功", f"截图已保存至：{filepath}")
                 self.status_label.setText(f"曲线已保存: {filename}")
         except Exception as e:
             self.status_label.setText(f"保存曲线失败: {str(e)}")
+
+    # ========== 轴向测试 ==========
+    def _axial_on_height_edited(self, row, col):
+        """key 单元格（第0行、第1列及之后）编辑后处理。
+        轴向模式：自动补 mm 单位（输入 9 -> 显示 9.0mm）
+        径向模式：保留用户输入的字符串位置标识。"""
+        if row != 0 or col == 0:
+            return
+        try:
+            item = self.axial_table.item(row, col)
+            if item is None:
+                return
+            text = str(item.text()).strip()
+            if text == '':
+                return
+            # 找到该列
+            target = None
+            for c in self.axial_columns:
+                if c['col'] == col:
+                    target = c
+                    break
+            if target is None:
+                return
+            mode = target.get('mode', self.axial_mode)
+            if mode == 'axial':
+                # 轴向模式：自动补 mm
+                cleaned = text.replace('mm', '').strip()
+                try:
+                    val = float(cleaned)
+                except (TypeError, ValueError):
+                    return
+                new_key = round(val, 1)
+                new_text = f"{new_key:.1f}mm"
+                if item.text() != new_text:
+                    self.axial_table.blockSignals(True)
+                    item.setText(new_text)
+                    self.axial_table.blockSignals(False)
+            else:
+                # 径向模式：直接用用户输入作为 key
+                new_key = text
+                new_text = text
+            # 同步缓存的 key
+            old_key = target['key']
+            if new_key != old_key:
+                if old_key in self.axial_keys:
+                    self.axial_keys.remove(old_key)
+                    self.axial_data.pop(old_key, None)
+                target['key'] = new_key
+                if new_key not in self.axial_keys:
+                    self.axial_keys.append(new_key)
+        except Exception as e:
+            print(f"[axial edit] 处理失败: {e}")
+
+    def _axial_add_height_column(self, value=None, add_save_btn=True):
+        """"+"按钮：新增一列。轴向模式=高度(float mm)，径向模式=位置字符串（如 a-c）。
+        value 为 None 时自动取下一值：
+          - 轴向模式：最后一列高度 + 10mm
+          - 径向模式：按默认列表循环 [a-c, b-c, d-c, c-d, e-c, ...]
+        add_save_btn=False 时不创建该列的保存按钮（用于第1列）。"""
+        try:
+            mode = self.axial_mode
+            # 自动生成 key
+            if value is None:
+                if mode == 'radial':
+                    # 径向模式：从默认列表依次取，超出后拼接 e-c, f-c, ...
+                    default_keys = ['a-c', 'b-c', 'd-c', 'c-d']
+                    if len(self.axial_keys) < len(default_keys):
+                        value = default_keys[len(self.axial_keys)]
+                    else:
+                        # 超过4个则用字母递增，首字母用 chr(ord('a')+idx)
+                        idx = len(self.axial_keys) - len(default_keys) + 4
+                        first_char = chr(ord('a') + idx)
+                        value = f"{first_char}-c"
+                else:
+                    # 轴向模式：最后一列 + 10mm
+                    if self.axial_keys:
+                        try:
+                            value = round(float(max(self.axial_keys)) + 10.0, 1)
+                        except (TypeError, ValueError):
+                            value = 0.0
+                    else:
+                        value = 0.0
+            # 标准化 key（轴向转 float，径向保留 str）
+            if mode == 'axial':
+                if isinstance(value, bool):
+                    value = None
+                if value is None:
+                    value = 0.0
+                key = round(float(value), 1)
+                display = f"{key:.1f}mm"
+            else:
+                key = str(value).strip()
+                display = key
+            # 重复检查
+            if key in self.axial_keys:
+                QMessageBox.information(
+                    self, "提示",
+                    f"该列已存在: {display}\n现有列: {self.axial_keys}")
+                return
+            col = len(self.axial_columns) + 1
+            self.axial_table.setColumnCount(col + 1)
+            # 该列第0行：key 显示（可编辑）
+            key_item = QTableWidgetItem(display)
+            key_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.axial_table.setItem(0, col, key_item)
+            self.axial_table.setItem(1, col, QTableWidgetItem("--"))
+            self.axial_table.setItem(2, col, QTableWidgetItem("--"))
+            save_btn = None
+            header_widget = None
+            if add_save_btn:
+                save_btn = QPushButton("保存")
+                save_btn.setFixedHeight(22)
+                save_btn.setStyleSheet(
+                    "QPushButton{background:#E91E63;color:white;font-weight:bold;border-radius:3px;"
+                    "padding:1px 4px;font-size:10px;}"
+                    "QPushButton:hover{background:#F06292;}")
+                # 使用 lambda 捕获当前 col 引用
+                save_btn.clicked.connect(lambda checked=False, c=col: self._axial_save_height(c))
+                header_widget = save_btn
+            else:
+                header_widget = QLabel("")
+                header_widget.setFixedHeight(22)
+            self.axial_save_btns_layout.addWidget(header_widget, stretch=1)
+            self.axial_columns.append({
+                'key': key,
+                'mode': mode,
+                'save_btn': save_btn,
+                'col': col,
+                'header_widget': header_widget,
+            })
+            self.axial_keys.append(key)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"添加列失败：{str(e)}")
+
+    def _axial_clear_all_columns(self):
+        """切换模式时清空所有列和缓存数据"""
+        # 移除所有列上的保存按钮 / 占位
+        for c in list(self.axial_columns):
+            hw = c.get('header_widget')
+            if hw is not None:
+                self.axial_save_btns_layout.removeWidget(hw)
+                hw.deleteLater()
+        self.axial_columns.clear()
+        self.axial_keys.clear()
+        self.axial_data.clear()
+        self.axial_records.clear()
+        # 表格重置为 1 列（仅行标签列）
+        self.axial_table.blockSignals(True)
+        self.axial_table.setColumnCount(1)
+        # 行0保留空白 item
+        if self.axial_table.item(0, 0) is None:
+            blank = QTableWidgetItem("")
+            blank.setFlags(blank.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.axial_table.setItem(0, 0, blank)
+        self.axial_table.blockSignals(False)
+
+    def _axial_on_mode_changed(self, idx):
+        """QComboBox 切换轴向/径向模式：清空现有数据并按新模式重新填充默认列"""
+        new_mode = 'radial' if idx == 1 else 'axial'
+        if new_mode == self.axial_mode:
+            return
+        self.axial_mode = new_mode
+        # 更新列0 标题
+        if hasattr(self, 'axial_col0_header'):
+            self.axial_col0_header.setText("位置" if new_mode == 'radial' else "高度")
+        # 同步开始按钮文字（未在采集中时）
+        if hasattr(self, 'axial_start_btn') and not self.test_running:
+            mode_cn = "径向" if new_mode == 'radial' else "轴向"
+            self.axial_start_btn.setText(f"开始{mode_cn}测试")
+        # 清空旧列与缓存
+        self._axial_clear_all_columns()
+        # 按新模式填充默认列
+        if new_mode == 'radial':
+            for key in ['a-c', 'b-c', 'd-c', 'c-d']:
+                self._axial_add_height_column(key, add_save_btn=True)
+        else:
+            for h in [0.0, 10.0, 20.0, 30.0]:
+                self._axial_add_height_column(h, add_save_btn=True)
+        # 状态文字
+        try:
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(
+                    f"已切换到{'径向' if new_mode == 'radial' else '轴向'}测试模式")
+        except Exception:
+            pass
+
+    def _axial_remove_height_column(self):
+        """"-"按钮：删除最后一列"""
+        if not self.axial_columns:
+            return
+        col_info = self.axial_columns.pop()
+        hw = col_info.get('header_widget')
+        if hw is not None:
+            self.axial_save_btns_layout.removeWidget(hw)
+            hw.deleteLater()
+        key = col_info.get('key')
+        if key in self.axial_keys:
+            self.axial_keys.remove(key)
+            self.axial_data.pop(key, None)
+        col_count = self.axial_table.columnCount()
+        if col_count > 1:
+            self.axial_table.setColumnCount(col_count - 1)
+
+    def _axial_save_height(self, col):
+        """点击某列的"保存"按钮：将当前通道1/2的avg写入该列单元格。
+        轴向模式 key 为 float（高度/mm），径向模式 key 为 str（位置对）。"""
+        try:
+            target = None
+            for c in self.axial_columns:
+                if c['col'] == col:
+                    target = c
+                    break
+            if target is None:
+                return
+            mode = target.get('mode', self.axial_mode)
+            # 从该列第0行单元格读取 key（用户可编辑）
+            key_item = self.axial_table.item(0, col)
+            cell_text = str(key_item.text()).strip() if key_item else ''
+            if mode == 'axial':
+                try:
+                    key = round(float(cell_text.replace('mm', '').strip()), 1)
+                    display = f"{key:.1f}mm"
+                except (TypeError, ValueError):
+                    key = target['key']
+                    display = f"{key:.1f}mm"
+            else:
+                key = cell_text
+                display = key
+                if not key:
+                    key = target['key']
+                    display = key
+            # 更新缓存的 key
+            if key != target['key']:
+                if target['key'] in self.axial_keys:
+                    self.axial_keys.remove(target['key'])
+                    self.axial_data.pop(target['key'], None)
+                target['key'] = key
+                self.axial_keys.append(key)
+                # 规范化单元格显示
+                self.axial_table.blockSignals(True)
+                self.axial_table.setItem(0, col, QTableWidgetItem(display))
+                self.axial_table.blockSignals(False)
+            f_avg = self._get_channel_avg(0)
+            m_avg = self._get_channel_avg(1)
+            if f_avg is None and m_avg is None:
+                QMessageBox.warning(self, "警告", "通道1/通道2 暂无数据，无法保存")
+                return
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.axial_table.setItem(1, col, QTableWidgetItem("--" if f_avg is None else f"{f_avg:.4f}"))
+            self.axial_table.setItem(2, col, QTableWidgetItem("--" if m_avg is None else f"{m_avg:.4f}"))
+            self.axial_data[key] = {'F': f_avg, 'M': m_avg, 'time': now_str}
+            self.axial_records.append((key, f_avg, m_avg, now_str))
+            self._save_axis_sheet()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"保存失败：{str(e)}")
+
+    def _get_channel_avg(self, dev_id):
+        """获取指定通道的窗口平均温度（avg），无数据返回 None"""
+        if not (0 <= dev_id < self._dev_row_count):
+            return None
+        if not self.devices[dev_id]['enabled']:
+            return None
+        try:
+            result = self.calculate_volatility(dev_id)
+            if result and len(result) >= 5:
+                return result[4]  # avg
+        except Exception:
+            pass
+        return None
+
+    def _axial_save_excel(self):
+        """将轴向/径向测试记录保存为Excel（行=指标，列=各列 key）"""
+        if not self.axial_data:
+            QMessageBox.warning(self, "警告", "暂无轴向/径向测试记录可保存")
+            return
+        try:
+            import os
+            import pandas as pd
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            save_dir = os.path.join(script_dir, "test data")
+            os.makedirs(save_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            mode_tag = 'radial' if self.axial_mode == 'radial' else 'axial'
+            filename = f"{mode_tag}-{timestamp}.xlsx"
+            filepath = os.path.join(save_dir, filename)
+            data = {'指标': ['F-avg', 'M-avg']}
+            for c in self.axial_columns:
+                mode = c.get('mode', self.axial_mode)
+                # 从单元格读取最新 key
+                item0 = self.axial_table.item(0, c['col'])
+                cell_text = str(item0.text()).strip() if item0 else ''
+                if mode == 'axial':
+                    try:
+                        key = round(float(cell_text.replace('mm', '').strip()), 1)
+                    except (TypeError, ValueError):
+                        key = c['key']
+                    col_label = f"{key:.1f}mm"
+                else:
+                    key = cell_text or c['key']
+                    col_label = str(key)
+                rec = self.axial_data.get(c['key'], {})
+                data[col_label] = [
+                    None if rec.get('F') is None else round(rec['F'], 4),
+                    None if rec.get('M') is None else round(rec['M'], 4),
+                ]
+            df = pd.DataFrame(data)
+            sheet_name = 'radial' if self.axial_mode == 'radial' else 'axis'
+            df.to_excel(filepath, sheet_name=sheet_name, index=False)
+            QMessageBox.information(self, "成功", f"测试数据已保存至：{filepath}")
+            self.status_label.setText(f"测试数据已保存: {filepath}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"保存失败：{str(e)}")
+
+    def _save_axis_sheet(self):
+        """将轴向/径向测试结果写入当前采集文件的 'axis' sheet。
+        表结构：行为指标(F-avg / M-avg)，列为各 key。
+        轴向模式：key 为 float 高度，列名带 mm
+        径向模式：key 为 str 位置对，列名为位置字符串。"""
+        if not self.axial_data:
+            return
+        if not self.current_data_file or not os.path.exists(self.current_data_file):
+            QMessageBox.warning(self, "警告", "当前无采集文件，无法写入 axis sheet")
+            return
+        sheet_name = 'radial' if self.axial_mode == 'radial' else 'axis'
+        try:
+            from openpyxl import load_workbook
+            data = {'指标': ['F-avg', 'M-avg']}
+            for c in self.axial_columns:
+                mode = c.get('mode', self.axial_mode)
+                item0 = self.axial_table.item(0, c['col'])
+                cell_text = str(item0.text()).strip() if item0 else ''
+                if mode == 'axial':
+                    try:
+                        key = round(float(cell_text.replace('mm', '').strip()), 1)
+                    except (TypeError, ValueError):
+                        key = c['key']
+                    col_label = f"{key:.1f}mm"
+                else:
+                    key = cell_text or c['key']
+                    col_label = str(key)
+                rec = self.axial_data.get(c['key'], {})
+                data[col_label] = [
+                    None if rec.get('F') is None else round(rec['F'], 4),
+                    None if rec.get('M') is None else round(rec['M'], 4),
+                ]
+            df = pd.DataFrame(data)
+            full_path = os.path.abspath(self.current_data_file)
+            # sheet 名：轴向=axis，径向=radial
+            sheet_name = 'radial' if self.axial_mode == 'radial' else 'axis'
+            wb = load_workbook(full_path)
+            if sheet_name in wb.sheetnames:
+                del wb[sheet_name]
+            ws = wb.create_sheet(sheet_name)
+            ws.append(list(df.columns))
+            for _, row in df.iterrows():
+                ws.append([None if pd.isna(v) else v for v in row.tolist()])
+            wb.save(full_path)
+            mode_cn = '径向' if self.axial_mode == 'radial' else '轴向'
+            self.status_label.setText(f"{mode_cn}测试结果已写入 {sheet_name} sheet: {full_path}")
+            print(f"[{sheet_name}] 已写入 sheet '{sheet_name}' -> {full_path}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"{sheet_name} sheet 写入失败：{str(e)}")
 
     def on_connection_status(self, dev_id, ok, msg):
         s = self.device_widgets[dev_id]['status']
@@ -4067,15 +4949,19 @@ class DataCollectorApp(QMainWindow):
             s.setStyleSheet("color:red;font-weight:bold;")
 
     def _rename_collection_file_if_needed(self, temp):
-        """首个启用通道收到第一个实时数据点时，用其温度值重命名采集 Excel 文件。"""
+        """首个启用通道收到第一个数据点时，用 SP 设定值（而非实时值）重命名采集 Excel 文件。"""
         if getattr(self, '_data_file_renamed', True):
             return
         if not self.current_data_file or not os.path.exists(self.current_data_file):
             return
+        # 文件名温度统一使用 SP 设定值（current_test_temp），不用实时 main 温度
         try:
-            temp_str = f"{float(temp):.1f}"
+            temp_str = f"{float(self.current_test_temp):.1f}"
         except (TypeError, ValueError):
-            return
+            try:
+                temp_str = f"{float(temp):.1f}"
+            except (TypeError, ValueError):
+                return
         # 仅当文件名仍为回退默认温度时才重命名（避免覆盖真实命名）
         old_path = self.current_data_file
         dir_path = os.path.dirname(old_path)
@@ -4104,11 +4990,9 @@ class DataCollectorApp(QMainWindow):
             self.datetime_buffer[dev_id].append(dt)
             self._plot_dirty = True
 
-            # 第一个启用通道收到首个实时数据点时，用其温度重命名采集文件
-            # （顺序测试使用 setpoint 命名，不做实时值重命名）
+            # 文件名统一使用 SP 设定值（start_collection 已按 SP 命名），不再用实时值重命名
             first_enabled = next((i for i in range(self._dev_row_count) if self.devices[i]['enabled']), None)
             if (first_enabled is not None and dev_id == first_enabled
-                    and not getattr(self, '_seq_naming_setpoint', False)
                     and not getattr(self, '_data_file_renamed', True)):
                 self._rename_collection_file_if_needed(temp)
 
@@ -4149,7 +5033,9 @@ class DataCollectorApp(QMainWindow):
             return c[1]
 
         now = datetime.now()
-        # 非 Stability 通道：对全部已采集数据实时统计（不限 30min 窗口，也不受 reset 影响）
+        # 所有通道波动计算窗口最大 30min，滚动更新
+        # Stability 通道：窗口起点取重置时刻与 now-30min 的较大者
+        # 非 Stability 通道：固定取最近 30min 滚动窗口
         is_stability = bool(self.devices[dev_id].get('auto_test', False))
         if is_stability:
             reset_time = self.legend_widget.get_reset_time(dev_id)
@@ -4158,7 +5044,7 @@ class DataCollectorApp(QMainWindow):
             else:
                 start_time = now - timedelta(minutes=30)
         else:
-            start_time = None  # 全量统计
+            start_time = now - timedelta(minutes=30)  # 非 Stability 也限 30min 滚动窗口
 
         # 用 numpy 从末尾切片取窗口内数据，避免 Python 级逐点循环
         temps_arr = np.asarray(self.data_buffer[dev_id], dtype=float)
@@ -4211,13 +5097,23 @@ class DataCollectorApp(QMainWindow):
         if not self.test_running:
             return
         self._check_special_channels()
+        # 手动测试模式：检查 stability 通道 T3 是否全部完成
+        # 轴向/径向测试（axis/radial 模式）不参与 T3 结束条件，始终记录，直到手动停止
+        # 手动测试下若未勾选"判断T3时刻"则连续记录，不判断 T3 结束条件
+        if (self.test_running and not self.sequential_running
+                and getattr(self, '_current_mode_tag', None) not in ('axis', 'radial')
+                and getattr(self, 'manual_check_t3_cb', None)
+                and self.manual_check_t3_cb.isChecked()
+                and not getattr(self, '_manual_test_done', False)):
+            self._check_manual_test_completion()
         # 仅在有新数据时更新曲线
         if getattr(self, '_plot_dirty', False):
             self._plot_dirty = False
             for i in range(self._dev_row_count):
                 if self.curves[i] is not None:
                     try:
-                        if self.devices[i]['enabled'] and len(self.time_buffer[i]) > 0 and len(self.data_buffer[i]) > 0:
+                        if (self.devices[i]['enabled'] and self.devices[i].get('curve_visible', True)
+                                and len(self.time_buffer[i]) > 0 and len(self.data_buffer[i]) > 0):
                             # 用 numpy 向量化，避免每帧 Python 级列表推导
                             times_min = np.asarray(self.time_buffer[i], dtype=float) / 60.0
                             # 过滤异常显示点，原始数据仍保留在 buffer 中
@@ -4312,9 +5208,8 @@ class DataCollectorApp(QMainWindow):
             full_path = os.path.abspath(filepath)
             with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-                if auto_log:
-                    auto_df = pd.DataFrame(auto_log, columns=['记录时间', '通道', 'T0(min)', 'T0-T1(min)', 'T1(min)', 'T2(min)', 'T3(min)', 'Std1', 'Std2', 'Avg1(°C)', 'Avg2(°C)'])
-                    auto_df.to_excel(writer, sheet_name='通道检测', index=False)
+                if getattr(self, 'auto_test_summary', None):
+                    pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
         except Exception as e:
             import traceback
             print(f"[_save_excel_bg] 后台保存Excel失败: {e}")
@@ -4347,6 +5242,7 @@ class DataCollectorApp(QMainWindow):
                        'phase': 'idle', 'T0_time': None, 'T2_time': None}
         self.auto_test_state.clear()
         self.auto_test_logged.clear()
+        self.auto_test_summary = None
         for d in range(self._dev_row_count):
             if self.devices[d].get('auto_test', False):
                 self.auto_test_state[d] = dict(blank_state)
@@ -4412,13 +5308,14 @@ class DataCollectorApp(QMainWindow):
         w['connection'] = conn_combo
 
         name_edit = QLineEdit(self.devices[dev_id]['name'])
-        row_layout.addWidget(name_edit, 1)
+        name_edit.setFixedWidth(110)
+        row_layout.addWidget(name_edit)
         w['name'] = name_edit
 
         # 串口 / IP 地址 双层切换：串口显示 PortComboBox（点击弹对话框），LAN显示QLineEdit
         port_ip_stack = QStackedWidget()
         port_combo = PortComboBox()
-        port_combo.setMinimumWidth(70)
+        port_combo.setMinimumWidth(110)
         ip_edit = QLineEdit()
         ip_edit.setPlaceholderText("IP地址")
         port_ip_stack.addWidget(port_combo)   # index 0: serial
@@ -4429,7 +5326,8 @@ class DataCollectorApp(QMainWindow):
         else:
             port_ip_stack.setCurrentIndex(1)
             ip_edit.setText(self.devices[dev_id]['host'])
-        row_layout.addWidget(port_ip_stack, 1)
+        port_ip_stack.setFixedWidth(120)
+        row_layout.addWidget(port_ip_stack)
         w['port_ip'] = port_ip_stack
         w['port_combo'] = port_combo
         w['ip_edit'] = ip_edit
@@ -4447,8 +5345,8 @@ class DataCollectorApp(QMainWindow):
 
         cmd_edit = QLineEdit(self.devices[dev_id]['read_command'])
         cmd_edit.setPlaceholderText("如：READ?\\r\\n")
-        cmd_edit.setMinimumWidth(120)
-        row_layout.addWidget(cmd_edit, 2)
+        cmd_edit.setMinimumWidth(220)
+        row_layout.addWidget(cmd_edit, 1)
         w['cmd'] = cmd_edit
 
         # 自动检测勾选
@@ -4458,6 +5356,14 @@ class DataCollectorApp(QMainWindow):
         auto_chk.stateChanged.connect(lambda s, idx=dev_id: self._on_auto_test_toggled(idx, s))
         row_layout.addWidget(auto_chk)
         w['auto_test'] = auto_chk
+
+        # 曲线显示勾选框：选中(开启)才显示该通道实时数据曲线，风格与 Stability 一致
+        curve_btn = QCheckBox("曲线")
+        curve_btn.setChecked(self.devices[dev_id].get('curve_visible', True))
+        curve_btn.setToolTip("开启后显示该通道实时数据曲线")
+        curve_btn.stateChanged.connect(lambda s, idx=dev_id: self._on_curve_btn_toggled(idx, bool(s)))
+        row_layout.addWidget(curve_btn)
+        w['curve_btn'] = curve_btn
 
         status_label = QLabel("未连接")
         status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -4480,13 +5386,37 @@ class DataCollectorApp(QMainWindow):
         self.devices[dev_id]['auto_test'] = bool(state)
         self.update_device_config(dev_id)
 
+    def _on_curve_btn_toggled(self, dev_id, checked):
+        """曲线按钮切换：选中才显示该通道实时数据曲线"""
+        if hasattr(self, '_loading') and self._loading:
+            return
+        self.devices[dev_id]['curve_visible'] = bool(checked)
+        self.update_device_config(dev_id)
+        # 立即刷新曲线显示
+        self._update_curve_visibility()
+
+    def _update_curve_visibility(self):
+        """根据曲线按钮状态立即刷新各通道曲线显示"""
+        if not hasattr(self, 'curves'):
+            return
+        # 用实际长度保护，避免 curves 未初始化或长度不足时索引越界
+        n = min(self._dev_row_count, len(self.curves))
+        for i in range(n):
+            if self.curves[i] is not None:
+                try:
+                    visible = (self.devices[i].get('enabled', False)
+                               and self.devices[i].get('curve_visible', True))
+                    self.curves[i].setVisible(visible)
+                except RuntimeError:
+                    self.curves[i] = None
+
     def _dev_add_row(self):
         """设备增加一行"""
         if self._dev_row_count >= 20:
             return
         new_dev = {'enabled': False, 'connection': 'serial', 'port': '', 'baudrate': '9600',
                    'name': f'设备{self._dev_row_count+1}', 'read_command': '',
-                   'host': '', 'lan_port': '', 'auto_test': False}
+                   'host': '', 'lan_port': '', 'auto_test': False, 'curve_visible': True}
         self.devices.append(new_dev)
         self._dev_row_count += 1
         # 确保颜色列表足够
@@ -4534,11 +5464,19 @@ class DataCollectorApp(QMainWindow):
             QDoubleSpinBox { padding: 0px 2px; border: 1px solid #999999; }
         """
 
-        def mk_spin(range_min, val, step, decimal, width, suffix=''):
-            s = QDoubleSpinBox()
-            s.setRange(range_min, 9999); s.setValue(val)
+        def mk_spin(range_min, val, step, decimal, width, suffix='', nullable=False):
+            # nullable=True 时使用可清空输入框，留空表示使用默认值（不发送）。
+            # 新添加的行 PID 参数默认留空（用温度源默认值），而非沿用固定数值
+            s = NullableSpinBox() if nullable else QDoubleSpinBox()
+            s.setRange(range_min, 9999)
+            if nullable:
+                s.setValue(None)  # 留空：使用默认值
+            else:
+                s.setValue(val)
             s.setSingleStep(step); s.setDecimals(decimal)
             s.setFixedWidth(width); s.setStyleSheet(no_arrow_style)
+            if nullable:
+                s.setPlaceholderText("默认")
             if suffix: s.setSuffix(suffix)
             return s
 
@@ -4565,78 +5503,74 @@ class DataCollectorApp(QMainWindow):
         )
         # 点击时按当前列表位置解析行号，保证拖动排序后仍对应正确行
         send_btn.clicked.connect(lambda _, btn=send_btn: self._send_row_command(self.row_send_btns.index(btn)))
+        send_btn.setEnabled(self.temp_source_connected)  # 未通信时禁用
         row_layout.addWidget(send_btn)
         self.row_send_btns.append(send_btn)
 
         row_layout.addWidget(QLabel("SP"))
-        sp = mk_spin(0, 25, 1, 1, 70)
+        sp = mk_spin(0, 25, 1, 1, 70, nullable=True)  # 新行留空，使用默认值
         sp.valueChanged.connect(lambda v, idx=row_idx: self._on_row_setpoint_changed(idx, v))
         row_layout.addWidget(sp)
         self.row_setpoint_spins.append(sp)
 
-        row_layout.addWidget(QLabel("Spc"))
-        spec = mk_spin(0, 0.5, 0.1, 2, 55)
+        row_layout.addWidget(QLabel("Spec"))
+        spec = mk_spin(0, 0.5, 0.1, 2, 55, nullable=True)  # 新行留空，使用默认值
         spec.valueChanged.connect(lambda v, idx=row_idx: self._on_row_spec_changed(idx, v))
         row_layout.addWidget(spec)
         self.row_setpoint_spec.append(spec)
 
         row_layout.addWidget(QLabel("M"))
-        main_spin = mk_spin(0, 50, 0.01, 2, 55)
+        main_spin = mk_spin(0, 50, 0.01, 2, 55, nullable=True)  # 新行留空，使用默认值
         main_spin.valueChanged.connect(lambda v, idx=row_idx: self._on_row_main_changed(idx, v))
         row_layout.addWidget(main_spin)
         self.row_main_spins.append(main_spin)
 
         row_layout.addWidget(QLabel("M-P"))
-        mp = mk_spin(0, 10, 0.1, 1, 55)
+        mp = mk_spin(0, 10, 0.1, 1, 55, nullable=True)
         mp.valueChanged.connect(lambda v: self.save_config())
         row_layout.addWidget(mp)
         self.row_main_pid_p.append(mp)
 
         row_layout.addWidget(QLabel("M-I"))
-        mi = mk_spin(0, 200, 1, 1, 55)
+        mi = mk_spin(0, 200, 1, 1, 55, nullable=True)
         mi.valueChanged.connect(lambda v: self.save_config())
         row_layout.addWidget(mi)
         self.row_main_pid_i.append(mi)
 
         row_layout.addWidget(QLabel("M-D"))
-        md = mk_spin(0, 50, 1, 1, 55)
+        md = mk_spin(0, 50, 1, 1, 55, nullable=True)
         md.valueChanged.connect(lambda v: self.save_config())
         row_layout.addWidget(md)
         self.row_main_pid_d.append(md)
 
         row_layout.addWidget(QLabel("S"))
-        sec_spin = mk_spin(0, 0, 1, 1, 55)
+        sec_spin = mk_spin(0, 0, 1, 1, 55, nullable=True)  # 新行留空，使用默认值
         sec_spin.valueChanged.connect(lambda v, idx=row_idx: self._on_row_sec_changed(idx, v))
         row_layout.addWidget(sec_spin)
         self.row_sec_spins.append(sec_spin)
 
         row_layout.addWidget(QLabel("S-P"))
-        sp_p = mk_spin(0, 10, 0.1, 1, 55)
+        sp_p = mk_spin(0, 10, 0.1, 1, 55, nullable=True)
         sp_p.valueChanged.connect(lambda v: self.save_config())
         row_layout.addWidget(sp_p)
         self.row_sec_pid_p.append(sp_p)
 
         row_layout.addWidget(QLabel("S-I"))
-        si = mk_spin(0, 200, 1, 1, 55)
+        si = mk_spin(0, 200, 1, 1, 55, nullable=True)
         si.valueChanged.connect(lambda v: self.save_config())
         row_layout.addWidget(si)
         self.row_sec_pid_i.append(si)
 
         row_layout.addWidget(QLabel("S-D"))
-        sd = mk_spin(0, 50, 1, 1, 55)
+        sd = mk_spin(0, 50, 1, 1, 55, nullable=True)
         sd.valueChanged.connect(lambda v: self.save_config())
         row_layout.addWidget(sd)
         self.row_sec_pid_d.append(sd)
 
-        row_layout.addWidget(QLabel("Wt"))
-        wt = []
-        for wi in range(3):
-            w = QLineEdit()
-            w.setFixedWidth(65)
-            w.textChanged.connect(lambda v: self.save_config())
-            row_layout.addWidget(w)
-            wt.append(w)
-        self.row_weights.append(wt)
+        # Weight：已取消显示，保留空列表维持索引对齐（数据不再通过 UI 输入）
+        self.row_weights.append([])
+
+        row_layout.addStretch()  # 输入框靠左，不拉伸到右侧
 
         # 收集该行的"高级控件"（Const 1210 时需要隐藏，从 index 5 开始"
         advanced = []
@@ -4646,10 +5580,10 @@ class DataCollectorApp(QMainWindow):
                 advanced.append(item.widget())
         self._ts_row_advanced_widgets.append(advanced)
 
-        # 插入到布局中
-        temp_ctrl_layout = self.ts_btn.parent().layout() if hasattr(self, 'ts_btn') else None
-        insert_pos = min(len(self._ts_row_layouts) + 1, temp_ctrl_layout.count())
-        temp_ctrl_layout.insertWidget(insert_pos, ts_container)
+        # 插入到自动测试框的 SP 行布局末尾
+        temp_ctrl_layout = getattr(self, 'ts_rows_layout', None)
+        if temp_ctrl_layout is not None:
+            temp_ctrl_layout.addWidget(ts_container)
         self._ts_row_layouts.append(ts_container)
 
         self._ts_row_count += 1
@@ -4665,8 +5599,7 @@ class DataCollectorApp(QMainWindow):
         """温度源减少一行设置"""
         if self._ts_row_count <= 1:
             return
-        temp_ctrl_layout = self.ts_btn.parent().layout() if hasattr(self, 'ts_btn') else None
-        if not temp_ctrl_layout:
+        if not getattr(self, 'ts_rows_layout', None):
             return
         # 移除最后一行
         if self._ts_row_layouts:
@@ -4711,7 +5644,7 @@ class DataCollectorApp(QMainWindow):
         tgt = target_dev_id
         if src == tgt:
             return
-        temp_ctrl_layout = self.ts_btn.parent().layout() if hasattr(self, 'ts_btn') else None
+        temp_ctrl_layout = getattr(self, 'ts_rows_layout', None)
         if not temp_ctrl_layout:
             return
         # 找到实际索引
@@ -4736,22 +5669,243 @@ class DataCollectorApp(QMainWindow):
                     self._ts_row_layouts, self._ts_row_advanced_widgets]:
             move_item(lst, src_idx, tgt_idx)
 
-        # 重建布局：按新顺序排列
-        # 保存表头（index 0）
+        # 重建自动测试框内的 SP 行布局：保存表头（index 0），重排其余行
         header_item = temp_ctrl_layout.takeAt(0)
-        # 保存 ctrl_row（最后一个 item）
-        ctrl_item = temp_ctrl_layout.takeAt(temp_ctrl_layout.count() - 1)
-        # 移除中间的所有行
         while temp_ctrl_layout.count():
             item = temp_ctrl_layout.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
-        # 重新加入：表头 + 新顺序行 + 控制行
+        # 重新加入：表头 + 新顺序行
         temp_ctrl_layout.addItem(header_item)
         for c in self._ts_row_layouts:
             temp_ctrl_layout.addWidget(c)
-        temp_ctrl_layout.addItem(ctrl_item)
         self.save_config()
+
+    def _check_manual_test_completion(self):
+        """手动测试模式：所有勾选 Stability 通道的 T3 到达后，保存 excel+截图并提示。
+           温度源保持运行，继续工作。"""
+        try:
+            # 勾选了 Stability 且启用的通道
+            auto_chs = [d for d in range(self._dev_row_count)
+                        if self.devices[d].get('auto_test', False) and self.devices[d].get('enabled', False)]
+            if not auto_chs:
+                return
+            # 全部通道 T3 完成
+            all_done = all(
+                d in self.auto_test_state
+                and self.auto_test_state[d].get('phase') == 'complete'
+                and self.auto_test_state[d].get('T3') is not None
+                for d in auto_chs
+            )
+            if not all_done:
+                return
+            self._manual_test_done = True
+            # 构建 T3 汇总（通道1-5 的 avg/std/max/min + t0/t1）
+            self.auto_test_summary = self._build_auto_test_summary()
+            # 1) 保存 stability（写入 current_data_file）
+            stability_ok = False
+            try:
+                self.auto_save_data()
+                stability_ok = True
+            except Exception as e:
+                print(f"[手动测试完成] Excel保存失败: {e}")
+            # 2) 计算 accuracy：通道5(User=dev4)和通道1(Fix=dev0)在 T3 时刻倒数 10min 的 max/avg/min
+            accuracy_rows = self._build_accuracy_rows(window_minutes=10)
+            # 3) 保存 accuracy sheet 到同一 Excel
+            accuracy_ok = False
+            try:
+                if accuracy_rows:
+                    self._save_accuracy_sheet(accuracy_rows)
+                    accuracy_ok = True
+            except Exception as e:
+                print(f"[手动测试完成] accuracy保存失败: {e}")
+            # 4) 保存截图
+            try:
+                self._save_whole_window_screenshot('T3')
+            except Exception as e:
+                print(f"[手动测试完成] 截图失败: {e}")
+            msg = "数据截图已保存"
+            if stability_ok and accuracy_ok:
+                msg += "\nstability 与 accuracy 全部保存完成"
+            elif stability_ok:
+                msg += "\n注意：accuracy 写入失败，仅 stability 已保存"
+            elif accuracy_ok:
+                msg += "\n注意：stability 写入失败，仅 accuracy 已保存"
+            else:
+                msg += "\n注意：stability 与 accuracy 均写入失败"
+            QMessageBox.information(self, "完成", msg)
+            self.status_label.setText("测试完成，数据与截图已保存，停止采集")
+            # T3 到达后停止采集（确保 stability 和 accuracy 都保存完成后再停）
+            try:
+                self.stop_collection()
+            except Exception as e:
+                print(f"[手动测试完成] 停止采集失败: {e}")
+        except Exception as e:
+            print(f"[手动测试完成] 异常: {e}")
+
+    def _build_accuracy_rows(self, window_minutes=10):
+        """计算通道5(User=dev4)和通道1(Fix=dev0)在 T3 时刻倒数 window_minutes 分钟内的 max/avg/min。
+        返回 [('No.', row_label, ...)] 列表形如 [{'No.': 'User', 'Max': ..., 'Avg': ..., 'Min': ...}, ...]。"""
+        rows = []
+        # 通道1(Fix)与通道5(User)对应 dev_id
+        targets = [
+            (4, 'User'),   # 通道5
+            (0, 'Fix'),    # 通道1
+        ]
+        # T3 相对 start_time 的分钟数取通道4(User)或通道1(Fix)的 T3（任一已完成即可）
+        t3_min = None
+        for d in (4, 0):
+            st = self.auto_test_state.get(d)
+            if st and st.get('phase') == 'complete' and st.get('T3') is not None:
+                t3_min = float(st['T3'])
+                break
+        if t3_min is None:
+            print("[accuracy] 未找到有效的 T3 时刻")
+            return rows
+        win_sec = float(window_minutes) * 60.0
+        t3_sec = t3_min * 60.0
+        win_start_sec = max(0.0, t3_sec - win_sec)
+        for dev_id, label in targets:
+            entry = {'No.': label, 'Max': None, 'Avg': None, 'Min': None}
+            try:
+                if not (0 <= dev_id < self._dev_row_count):
+                    rows.append(entry)
+                    continue
+                if not self.devices[dev_id].get('enabled', False):
+                    rows.append(entry)
+                    continue
+                tb = self.time_buffer.get(dev_id)
+                db = self.data_buffer.get(dev_id)
+                if not tb or not db:
+                    rows.append(entry)
+                    continue
+                vals = []
+                for i, v in enumerate(db):
+                    if i < len(tb):
+                        ts = float(tb[i])
+                        if win_start_sec <= ts <= t3_sec:
+                            try:
+                                vals.append(float(v))
+                            except (TypeError, ValueError):
+                                continue
+                if vals:
+                    entry['Max'] = float(np.max(vals))
+                    entry['Avg'] = float(np.mean(vals))
+                    entry['Min'] = float(np.min(vals))
+            except Exception as e:
+                print(f"[accuracy] 计算通道{dev_id+1}({label})失败: {e}")
+            rows.append(entry)
+        return rows
+
+    def _save_accuracy_sheet(self, accuracy_rows):
+        """将 accuracy_rows 写入 current_data_file 的 'accuracy' sheet。
+        若文件已存在则追加/覆盖该 sheet；否则新建文件。
+        与 stability 写入分离：先调 auto_save_data() 后再调本函数，确保两个 sheet 共存。"""
+        if not accuracy_rows:
+            return
+        import os
+        from openpyxl import load_workbook
+        full_path = os.path.abspath(self.current_data_file)
+        # 计算列顺序：'No.' 在第1列，其他数值列保留插入顺序
+        cols = ['No.', 'Max', 'Avg', 'Min']
+        df = pd.DataFrame(accuracy_rows, columns=cols)
+        # 先写入临时文件，然后用 load_workbook 合并到 full_path
+        tmp_path = full_path + '.accuracy.tmp'
+        try:
+            with pd.ExcelWriter(tmp_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='accuracy', index=False)
+            if os.path.exists(full_path):
+                wb = load_workbook(full_path)
+                if 'accuracy' in wb.sheetnames:
+                    del wb['accuracy']
+                # 从临时文件读取 accuracy 并追加
+                wb_tmp = load_workbook(tmp_path)
+                src = wb_tmp['accuracy']
+                dst = wb.create_sheet('accuracy')
+                for row in src.iter_rows(values_only=True):
+                    dst.append(row)
+                wb_tmp.close()
+                wb.save(full_path)
+            else:
+                # 文件不存在时直接把临时文件改名
+                if os.path.exists(tmp_path):
+                    os.replace(tmp_path, full_path)
+            self.status_label.setText(f"accuracy 数据已保存至: {full_path}")
+            print(f"[accuracy] 已写入 sheet 'accuracy' -> {full_path}")
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
+    def _build_auto_test_summary(self):
+        """T3 完成后构建跨通道汇总。
+        通道编号映射 dev_id：通道1=dev0, 通道2=dev1, 通道3=dev2, 通道4=dev3, 通道5=dev4。
+        Main=通道3 avg, Sec=通道4 avg, User=通道5 avg, U-Std=通道5 std,
+        F-avg=通道1 avg, M-avg=通道2 avg, F-std=通道1 std,
+        F-Max/F-Min=通道1 T3窗口极值, t0/t1=通道1 T0/T1。
+        对于未勾选 Stability 的通道，auto_test_state 中无 avg2/std2，
+        这里 fallback 使用 calculate_volatility 当前窗口的 avg/std，避免漏记。"""
+        def _safe(d, key):
+            try:
+                st = self.auto_test_state.get(d, {})
+                return st.get(key)
+            except Exception:
+                return None
+
+        def _val_or_calc(d, key):
+            # 优先用 auto_test_state（如有 T3 检测结果），否则用当前窗口 calculate_volatility
+            v = _safe(d, key)
+            if v is not None:
+                return v
+            if not (0 <= d < self._dev_row_count):
+                return None
+            if not self.devices[d].get('enabled', False):
+                return None
+            try:
+                res = self.calculate_volatility(d)
+                if res and len(res) >= 5:
+                    if key == 'avg2':
+                        return res[4]
+                    if key == 'std2':
+                        return res[0]
+            except Exception:
+                pass
+            return None
+
+        # 通道1（dev0）F-Max/F-Min：T3 时刻所在 30min 窗口的极值
+        f_max = f_min = None
+        try:
+            if 0 < len(self.data_buffer) and len(self.data_buffer[0]) > 0:
+                now_ts = time.time()
+                start_ts = now_ts - 30 * 60
+                vals = []
+                tb = self.time_buffer[0]
+                db = self.data_buffer[0]
+                for i, v in enumerate(db):
+                    if i < len(tb) and tb[i] >= start_ts:
+                        vals.append(v)
+                if vals:
+                    f_max = float(np.max(vals))
+                    f_min = float(np.min(vals))
+        except Exception:
+            f_max = f_min = None
+
+        summary = {
+            'Main': _val_or_calc(2, 'avg2'),
+            'Sec': _val_or_calc(3, 'avg2'),
+            'User': _val_or_calc(4, 'avg2'),
+            'U-Std': _val_or_calc(4, 'std2'),
+            'F-avg': _val_or_calc(0, 'avg2'),
+            'M-avg': _val_or_calc(1, 'avg2'),
+            'F-std': _val_or_calc(0, 'std2'),
+            'F-Max': f_max,
+            'F-Min': f_min,
+            't0': _safe(0, 'T0'),
+            't1': _safe(0, 'T1'),
+        }
+        return summary
 
     def _check_special_channels(self):
         """所有勾选了 Stability 的通道自动检测：T0/T1/T2/T3/Std1/Std2/Avg1/Avg2"""
@@ -4929,8 +6083,16 @@ class DataCollectorApp(QMainWindow):
         self.debug_dialog.raise_()
 
     def on_debug_info(self, device_id, command, response, parsed_value, success, error_msg):
+        # 问询（读取/查询温度）命令不记录、不打印
+        is_query = ('?' in command) or command.strip().upper().startswith(('READ', 'MEAS', 'FETCH'))
+        if is_query:
+            return
         if self.debug_dialog and self.debug_dialog.isVisible():
             self.debug_dialog.append_comm_detail(device_id, command, response, parsed_value, success, error_msg)
+        # 仅控制类命令失败时打印到终端区
+        if hasattr(self, 'legend_widget') and not success:
+            dev_name = self.devices[device_id].get('name', f'设备{device_id+1}') if device_id < len(self.devices) else f'设备{device_id+1}'
+            self.legend_widget.append_terminal(f"{dev_name} 发送:{command.strip()} 失败: {error_msg}")
 
     def save_config_to_file(self):
         path, _ = QFileDialog.getSaveFileName(self, "保存配置", "serial_config.json", "JSON (*.json)")
@@ -4973,6 +6135,8 @@ class DataCollectorApp(QMainWindow):
                         self.device_widgets[i]['cmd'].setText(d.get('read_command', ''))
                         if 'auto_test' in self.device_widgets[i]:
                             self.device_widgets[i]['auto_test'].setChecked(d.get('auto_test', False))
+                        if 'curve_btn' in self.device_widgets[i]:
+                            self.device_widgets[i]['curve_btn'].setChecked(d.get('curve_visible', True))
             if 'interval' in cfg:
                 self.interval_spin.setValue(cfg['interval'])
             self.save_config()
@@ -5021,6 +6185,8 @@ class DataCollectorApp(QMainWindow):
                             self.device_widgets[i]['cmd'].setText(d.get('read_command', ''))
                             if 'auto_test' in self.device_widgets[i]:
                                 self.device_widgets[i]['auto_test'].setChecked(d.get('auto_test', False))
+                            if 'curve_btn' in self.device_widgets[i]:
+                                self.device_widgets[i]['curve_btn'].setChecked(d.get('curve_visible', True))
                     # 重新初始化图表和图例（设备数据已更新，使用正确的命令判断单位）
                     self.init_plots()
                 if 'interval' in cfg:
@@ -5124,6 +6290,8 @@ class DataCollectorApp(QMainWindow):
                             parts = v.split(',')
                             for j in range(min(len(parts), len(self.row_weights[i]))):
                                 self.row_weights[i][j].setText(parts[j])
+                if 'manual_check_t3' in cfg:
+                    self.manual_check_t3_cb.setChecked(bool(cfg['manual_check_t3']))
 
                 # 加载完成后，根据当前设备的偏好恢复通讯方式
                 # （若设备类型未变，currentTextChanged 信号不会触发，需手动恢复）
@@ -5196,13 +6364,14 @@ class DataCollectorApp(QMainWindow):
             "temp_source_baud": self.temp_source_baud_spin.value(),
             "temp_source_ip": self.temp_source_ip_edit.text(),
             "temp_source_lan_port": self.temp_source_lan_port_spin.value(),
-            "row_main_pid_p": [self.row_main_pid_p[i].value() for i in range(self._ts_row_count)],
-            "row_main_pid_i": [self.row_main_pid_i[i].value() for i in range(self._ts_row_count)],
-            "row_main_pid_d": [self.row_main_pid_d[i].value() for i in range(self._ts_row_count)],
-            "row_sec_pid_p": [self.row_sec_pid_p[i].value() for i in range(self._ts_row_count)],
-            "row_sec_pid_i": [self.row_sec_pid_i[i].value() for i in range(self._ts_row_count)],
-            "row_sec_pid_d": [self.row_sec_pid_d[i].value() for i in range(self._ts_row_count)],
+            "row_main_pid_p": [self.row_main_pid_p[i].value() if self.row_main_pid_p[i].value() is not None else '' for i in range(self._ts_row_count)],
+            "row_main_pid_i": [self.row_main_pid_i[i].value() if self.row_main_pid_i[i].value() is not None else '' for i in range(self._ts_row_count)],
+            "row_main_pid_d": [self.row_main_pid_d[i].value() if self.row_main_pid_d[i].value() is not None else '' for i in range(self._ts_row_count)],
+            "row_sec_pid_p": [self.row_sec_pid_p[i].value() if self.row_sec_pid_p[i].value() is not None else '' for i in range(self._ts_row_count)],
+            "row_sec_pid_i": [self.row_sec_pid_i[i].value() if self.row_sec_pid_i[i].value() is not None else '' for i in range(self._ts_row_count)],
+            "row_sec_pid_d": [self.row_sec_pid_d[i].value() if self.row_sec_pid_d[i].value() is not None else '' for i in range(self._ts_row_count)],
             "row_weights": [','.join(w.text() for w in self.row_weights[i]) for i in range(self._ts_row_count)],
+            "manual_check_t3": self.manual_check_t3_cb.isChecked(),
         }
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -5226,11 +6395,24 @@ def main():
         QPushButton { background-color: #f5f5f5; color: #000000; }
         QTextEdit { background-color: #ffffff; color: #000000; }
         QCheckBox { background-color: #ffffff; color: #000000; }
+        QCheckBox::indicator {
+            width: 16px; height: 16px;
+            border: 1.5px solid #555555; border-radius: 3px;
+            background: #ffffff;
+        }
+        QCheckBox::indicator:checked {
+            background: #2196F3; border: 1.5px solid #2196F3;
+        }
+        QCheckBox::indicator:unchecked {
+            background: #ffffff; border: 1.5px solid #555555;
+        }
         QStatusBar { background-color: #f0f0f0; color: #000000; }
     """)
     app.setFont(QFont(font_family, 9))
     window = DataCollectorApp()
     window.show()
+    # 窗口显示后输出程序启动信息到终端区
+    QTimer.singleShot(100, lambda: window._log_startup_info())
     sys.exit(app.exec())
 
 
