@@ -18,7 +18,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.1.0"
 
 import sys
 import os
