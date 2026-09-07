@@ -3,17 +3,18 @@
         {
             "enabled": true,
             "connection": "serial",
-            "port": "/dev/cu.Bluetooth-Incoming-Port",
-            "baudrate": "9600",
-            "name": "设备1",
-            "read_command": "",
+            "port": "COM3",
+            "baudrate": "115200",
+            "name": "USER",
+            "read_command": "SOUR:SENS:DATA? USER",
             "host": "",
             "lan_port": "",
             "auto_test": false,
-            "curve_visible": true
+            "curve_visible": true,
+            "read_interval": 1.0
         },
         {
-            "enabled": true,
+            "enabled": false,
             "connection": "serial",
             "port": "/dev/cu.Bluetooth-Incoming-Port",
             "baudrate": "9600",
@@ -25,7 +26,7 @@
             "curve_visible": true
         },
         {
-            "enabled": true,
+            "enabled": false,
             "connection": "serial",
             "port": "/dev/cu.debug-console",
             "baudrate": "9600",
@@ -37,7 +38,7 @@
             "curve_visible": true
         },
         {
-            "enabled": true,
+            "enabled": false,
             "connection": "serial",
             "port": "/dev/cu.debug-console",
             "baudrate": "9600",
@@ -82,46 +83,46 @@
         25.0,
         25.0,
         25.0,
-        100.0,
+        98.0,
         null,
         null,
         null
     ],
     "row_specs": [
-        0.5,
-        0.5,
-        0.5,
+        null,
+        null,
+        null,
         null,
         null,
         null,
         null
     ],
     "row_mains": [
-        50.0,
-        50.0,
-        50.0,
+        null,
+        null,
+        null,
         null,
         null,
         null,
         null
     ],
     "row_secs": [
-        0.0,
-        0.0,
-        0.0,
+        null,
+        null,
+        null,
         null,
         null,
         null,
         null
     ],
     "row_checks": [
-        true,
-        true,
-        true,
-        true,
-        true,
-        true,
-        true
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
     ],
     "temp_source_conn_prefs": {
         "Fluke 9250": "serial",
@@ -129,7 +130,7 @@
     },
     "temp_source_device_settings": {
         "Fluke 9250": {
-            "port": "/dev/cu.debug-console",
+            "port": "COM3",
             "baud": 115200,
             "ip": "",
             "lan_port": 8000
@@ -149,96 +150,96 @@
                 25.0,
                 25.0,
                 25.0,
-                100.0,
+                98.0,
                 null,
                 null,
                 null
             ],
             "row_specs": [
-                0.5,
-                0.5,
-                0.5,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_mains": [
-                50.0,
-                50.0,
-                50.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_secs": [
-                0.0,
-                0.0,
-                0.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_checks": [
-                true,
-                true,
-                true,
-                true,
-                true,
-                true,
-                true
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
             ],
             "row_main_pid_p": [
-                10.0,
-                10.0,
-                10.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_main_pid_i": [
-                200.0,
-                200.0,
-                200.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_main_pid_d": [
-                50.0,
-                50.0,
-                50.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_sec_pid_p": [
-                10.0,
-                10.0,
-                10.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_sec_pid_i": [
-                200.0,
-                200.0,
-                200.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
                 null
             ],
             "row_sec_pid_d": [
-                50.0,
-                50.0,
-                50.0,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -256,59 +257,59 @@
         }
     },
     "temp_source_conn": "serial",
-    "temp_source_port": "/dev/cu.debug-console",
+    "temp_source_port": "COM3",
     "temp_source_baud": 115200,
     "temp_source_ip": "",
     "temp_source_lan_port": 8000,
     "row_main_pid_p": [
-        10.0,
-        10.0,
-        10.0,
+        "",
+        "",
+        "",
         "",
         "",
         "",
         ""
     ],
     "row_main_pid_i": [
-        200.0,
-        200.0,
-        200.0,
+        "",
+        "",
+        "",
         "",
         "",
         "",
         ""
     ],
     "row_main_pid_d": [
-        50.0,
-        50.0,
-        50.0,
+        "",
+        "",
+        "",
         "",
         "",
         "",
         ""
     ],
     "row_sec_pid_p": [
-        10.0,
-        10.0,
-        10.0,
+        "",
+        "",
+        "",
         "",
         "",
         "",
         ""
     ],
     "row_sec_pid_i": [
-        200.0,
-        200.0,
-        200.0,
+        "",
+        "",
+        "",
         "",
         "",
         "",
         ""
     ],
     "row_sec_pid_d": [
-        50.0,
-        50.0,
-        50.0,
+        "",
+        "",
+        "",
         "",
         "",
         "",
@@ -323,5 +324,5 @@
         "",
         ""
     ],
-    "manual_check_t3": true
+    "manual_check_t3": false
 }
