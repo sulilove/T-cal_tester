@@ -17,7 +17,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 
 import sys
 import os
@@ -221,8 +221,8 @@ class CustomLegendWidget(QWidget):
             if volatility is None:
                 self.table.item(row, 5).setText("--")
             else:
-                # 减小显示位数，单行紧凑显示（2位小数，去掉时长后缀）
-                self.table.item(row, 5).setText(f"{volatility:.2f}")
+                # Std 显示 4 位小数（分辨率 0.0001），与判定阈值精度一致
+                self.table.item(row, 5).setText(f"{volatility:.4f}")
 
     def update_stats(self, device_id, min_val=None, max_val=None, avg_val=None, unit=''):
         if device_id in self.device_items:
