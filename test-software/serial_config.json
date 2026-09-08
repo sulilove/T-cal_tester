@@ -1,0 +1,89 @@
+{
+    "devices": [
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM3",
+            "baudrate": "38400",
+            "name": "Fix0",
+            "read_command": "FETC? (@1)\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": true,
+            "read_interval": 1.0
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM3",
+            "baudrate": "38400",
+            "name": "MOV20",
+            "read_command": "FETC? (@2)\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": true,
+            "read_interval": 1.0
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM3",
+            "baudrate": "38400",
+            "name": "MOV40",
+            "read_command": "FETC? (@3)\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": true,
+            "read_interval": 1.0
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM5",
+            "baudrate": "115200",
+            "name": "TC_Main_20mm-SIC",
+            "read_command": "SOUR:SENS:DATA? TEMP1\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "read_interval": 1.0
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM5",
+            "baudrate": "115200",
+            "name": "TC_Ref_100mm-SIC",
+            "read_command": "SOUR:SENS:DATA? TEMP2\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "read_interval": 1.0
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM5",
+            "baudrate": "115200",
+            "name": "Duty main",
+            "read_command": "OUTP:DATA? MAIN\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "read_interval": 1.0
+        },
+        {
+            "enabled": true,
+            "connection": "serial",
+            "port": "COM5",
+            "baudrate": "115200",
+            "name": "Duty sec",
+            "read_command": "OUTP:DATA? SEC\\r\\n",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "read_interval": 1.0
+        }
+    ],
+    "interval": 1000
+}
