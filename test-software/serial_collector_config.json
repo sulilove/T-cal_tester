@@ -166,9 +166,9 @@
                 50.0
             ],
             "row_sec_pid_p": [
+                9.7,
                 10.0,
-                10.0,
-                7.500000000000009
+                7.5
             ],
             "row_sec_pid_i": [
                 200.0,
@@ -208,9 +208,9 @@
         50.0
     ],
     "row_sec_pid_p": [
+        9.7,
         10.0,
-        10.0,
-        7.500000000000009
+        7.5
     ],
     "row_sec_pid_i": [
         200.0,
@@ -227,7 +227,7 @@
         "",
         ""
     ],
-    "manual_check_t3": true,
+    "manual_check_t3": false,
     "manual_t3_stop_ts": false,
     "manual_spec": 0.5
 }
