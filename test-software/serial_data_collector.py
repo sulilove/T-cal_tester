@@ -17,7 +17,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 
 import sys
 import os
@@ -1294,6 +1294,18 @@ class DataCollectorApp(QMainWindow):
         self.sched_test_timer = QTimer()
         self.sched_test_timer.timeout.connect(self._scheduled_test_check)
 
+        # 温度源定时开启（手动测试）
+        self.ts_sched_armed = False
+        self.ts_sched_timer = QTimer()
+        self.ts_sched_timer.timeout.connect(self._ts_scheduled_check)
+        self.ts_sched_target_time = None
+
+        # 定时停止（手动测试）：同一时间，通过勾选选择停止采集 / 停止温控
+        self.stop_sched_armed = False
+        self.stop_sched_timer = QTimer()
+        self.stop_sched_timer.timeout.connect(self._stop_scheduled_check)
+        self.stop_sched_target_time = None
+
         # 自动检测状态（按需创建）
         self.auto_test_state = {}        # dev_id -> state dict
         self.auto_test_log = []          # [(时间, 通道名, T0, T1, T2, T3, Std1, Std2, Avg1, Avg2), ...]
@@ -1942,6 +1954,7 @@ class DataCollectorApp(QMainWindow):
         self.ts_const1210_temp_label.setStyleSheet("font-size:11px;font-weight:bold;color:#e65100;")
         self.ts_const1210_temp_label.setVisible(False)
         ctrl_row.addWidget(self.ts_const1210_temp_label)
+
         ctrl_row.addStretch()
         manual_v.addLayout(ctrl_row)
 
@@ -1957,7 +1970,9 @@ class DataCollectorApp(QMainWindow):
         self.manual_check_t3_cb = QCheckBox("T3结束测试")
         self.manual_check_t3_cb.setChecked(True)
         self.manual_check_t3_cb.setStyleSheet("font-size:11px;color:#1f77b4;")
-        self.manual_check_t3_cb.stateChanged.connect(lambda v: self.save_config())
+        self.manual_check_t3_cb.setToolTip("勾选后由 T3 时刻判断结束；与「定时停止」互斥，二者不可同时生效")
+        self.manual_check_t3_cb.stateChanged.connect(
+            lambda v: (self.save_config(), self._sync_t3_stop_exclusive()))
         collect_row.addWidget(self.manual_check_t3_cb)
         # T3 时刻到达后停止温度源输出（勾选后，T3 到达时自动停止温度源）
         self.manual_t3_stop_ts_cb = QCheckBox("T3停止控制")
@@ -1979,6 +1994,95 @@ class DataCollectorApp(QMainWindow):
         collect_row.addWidget(self.screenshot_btn)
         collect_row.addStretch()
         manual_v.addLayout(collect_row)
+
+        # ===== 定时开启行：一个时间，勾选决定开始采集 / 开始控制 =====
+        start_sched_row = QHBoxLayout()
+        start_sched_row.setSpacing(6)
+
+        start_lbl = QLabel("定时开启:")
+        start_lbl.setStyleSheet("font-size:11px;font-weight:bold;color:#555555;")
+        start_lbl.setToolTip("到达设定时间后，按下方勾选项执行开启（可单选或全选）")
+        start_sched_row.addWidget(start_lbl)
+
+        self.ts_sched_time_edit = QDateTimeEdit()
+        self.ts_sched_time_edit.setDisplayFormat("MM-dd HH:mm")
+        self.ts_sched_time_edit.setDateTime(QDateTime.currentDateTime().addSecs(300))
+        self.ts_sched_time_edit.setFixedWidth(100)
+        self.ts_sched_time_edit.setCalendarPopup(False)
+        self.ts_sched_time_edit.setStyleSheet("QDateTimeEdit{border:1px solid #999;border-radius:3px;padding:2px;font-size:11px;}QDateTimeEdit::up-button,QDateTimeEdit::down-button,QDateTimeEdit::up-arrow,QDateTimeEdit::down-arrow,QDateTimeEdit::drop-down,QDateTimeEdit::calendar-popup{subcontrol-origin:border;subcontrol-position:right;width:0px;height:0px;border:none;image:none;margin:0;padding:0;}")
+        start_sched_row.addWidget(self.ts_sched_time_edit)
+
+        # 开启对象勾选（可单选或全选）
+        self.ts_sched_coll_cb = QCheckBox("开始采集")
+        self.ts_sched_coll_cb.setChecked(False)
+        self.ts_sched_coll_cb.setStyleSheet("font-size:11px;color:#2e7d32;font-weight:bold;")
+        self.ts_sched_coll_cb.setToolTip("到达时间后开始采集数据")
+        start_sched_row.addWidget(self.ts_sched_coll_cb)
+
+        self.ts_sched_ts_cb = QCheckBox("开始控制")
+        self.ts_sched_ts_cb.setChecked(True)
+        self.ts_sched_ts_cb.setStyleSheet("font-size:11px;color:#ef6c00;font-weight:bold;")
+        self.ts_sched_ts_cb.setToolTip("到达时间后启动温度源输出控制（自动连接串口）")
+        start_sched_row.addWidget(self.ts_sched_ts_cb)
+
+        self.ts_sched_btn = QPushButton()
+        self.ts_sched_btn.setFixedSize(78, 26)
+        self.ts_sched_btn.clicked.connect(self._toggle_ts_scheduled)
+        start_sched_row.addWidget(self.ts_sched_btn)
+
+        self.ts_sched_status_label = QLabel("")
+        self.ts_sched_status_label.setStyleSheet("font-size:10px;color:#ef6c00;")
+        start_sched_row.addWidget(self.ts_sched_status_label)
+
+        start_sched_row.addStretch()
+        manual_v.addLayout(start_sched_row)
+        self._update_ts_sched_btn()
+
+        # ===== 定时停止行：一个时间，勾选决定停止采集 / 停止温控 =====
+        stop_sched_row = QHBoxLayout()
+        stop_sched_row.setSpacing(6)
+
+        stop_lbl = QLabel("定时停止:")
+        stop_lbl.setStyleSheet("font-size:11px;font-weight:bold;color:#555555;")
+        stop_lbl.setToolTip("到达设定时间后，按下方勾选项执行停止（可单选或全选）")
+        stop_sched_row.addWidget(stop_lbl)
+
+        self.stop_sched_time_edit = QDateTimeEdit()
+        self.stop_sched_time_edit.setDisplayFormat("MM-dd HH:mm")
+        self.stop_sched_time_edit.setDateTime(QDateTime.currentDateTime().addSecs(300))
+        self.stop_sched_time_edit.setFixedWidth(100)
+        self.stop_sched_time_edit.setCalendarPopup(False)
+        self.stop_sched_time_edit.setStyleSheet("QDateTimeEdit{border:1px solid #999;border-radius:3px;padding:2px;font-size:11px;}QDateTimeEdit::up-button,QDateTimeEdit::down-button,QDateTimeEdit::up-arrow,QDateTimeEdit::down-arrow,QDateTimeEdit::drop-down,QDateTimeEdit::calendar-popup{subcontrol-origin:border;subcontrol-position:right;width:0px;height:0px;border:none;image:none;margin:0;padding:0;}")
+        stop_sched_row.addWidget(self.stop_sched_time_edit)
+
+        # 停止对象勾选（可单选或全选）
+        self.stop_sched_coll_cb = QCheckBox("停止采集")
+        self.stop_sched_coll_cb.setChecked(True)
+        self.stop_sched_coll_cb.setStyleSheet("font-size:11px;color:#c62828;font-weight:bold;")
+        self.stop_sched_coll_cb.setToolTip("到达时间后停止采集数据（自动保存 Excel 并截图）")
+        stop_sched_row.addWidget(self.stop_sched_coll_cb)
+
+        self.stop_sched_ts_cb = QCheckBox("停止控制")
+        self.stop_sched_ts_cb.setChecked(True)
+        self.stop_sched_ts_cb.setStyleSheet("font-size:11px;color:#e65100;font-weight:bold;")
+        self.stop_sched_ts_cb.setToolTip("到达时间后停止温度源输出控制")
+        stop_sched_row.addWidget(self.stop_sched_ts_cb)
+
+        self.stop_sched_btn = QPushButton()
+        self.stop_sched_btn.setFixedSize(78, 26)
+        self.stop_sched_btn.clicked.connect(self._toggle_stop_scheduled)
+        stop_sched_row.addWidget(self.stop_sched_btn)
+
+        self.stop_sched_status_label = QLabel("")
+        self.stop_sched_status_label.setStyleSheet("font-size:10px;color:#e65100;")
+        stop_sched_row.addWidget(self.stop_sched_status_label)
+
+        stop_sched_row.addStretch()
+        manual_v.addLayout(stop_sched_row)
+        self._update_stop_sched_btn()
+        # T3结束测试 与 定时停止 互斥，初始化同步一次
+        self._sync_t3_stop_exclusive()
+
         # 手动测试外框容器加入温度源控制布局
         temp_ctrl_layout.addWidget(self.ts_manual_group)
         self.ts_manual_group.toggled.connect(self._redistribute_left_splitter)
@@ -2412,6 +2516,242 @@ class DataCollectorApp(QMainWindow):
                     self.temp_source_start()
         else:
             self.temp_source_start()
+
+    def _update_ts_sched_btn(self):
+        """根据定时开启状态更新按钮文字/颜色"""
+        if self.ts_sched_armed:
+            self._set_btn_style(self.ts_sched_btn, "取消定时", "#f44336")
+        else:
+            self._set_btn_style(self.ts_sched_btn, "定时开启", "#FF9800")
+        self.ts_sched_btn.setEnabled(True)
+
+    def _toggle_ts_scheduled(self):
+        """切换温度源定时开启的设定/取消"""
+        if self.ts_sched_armed:
+            self._cancel_ts_scheduled()
+        else:
+            self._arm_ts_scheduled()
+
+    def _arm_ts_scheduled(self):
+        """设定定时开启"""
+        # 至少选择一项
+        if not self.ts_sched_coll_cb.isChecked() and not self.ts_sched_ts_cb.isChecked():
+            QMessageBox.warning(self, "警告", "请至少勾选一项：开始采集 或 开始控制")
+            return
+        target = self._arm_schedule_common(
+            self.ts_sched_time_edit, self.ts_sched_status_label, self.ts_sched_timer)
+        if target is None:
+            return
+        self.ts_sched_target_time = target
+        self.ts_sched_armed = True
+        self._update_ts_sched_btn()
+
+    def _cancel_ts_scheduled(self):
+        """取消已设定的温度源定时开启"""
+        self.ts_sched_armed = False
+        self.ts_sched_timer.stop()
+        self._update_ts_sched_btn()
+        self.ts_sched_time_edit.setEnabled(True)
+        self.ts_sched_status_label.setText("")
+
+    @staticmethod
+    def _fmt_remain(remain_secs):
+        """剩余时间格式化"""
+        if remain_secs >= 3600:
+            return f"{remain_secs//3600}h{(remain_secs%3600)//60}min"
+        if remain_secs >= 60:
+            return f"{remain_secs//60}min{remain_secs%60}s"
+        return f"{remain_secs}s"
+
+    # ===== 定时功能共用辅助（开启/停止采集/停止温控 三处复用）=====
+    def _arm_schedule_common(self, time_edit, status_label, timer, desc="已设定"):
+        """校验时间并启动倒计时。成功返回 target_dt，失败返回 None"""
+        target_dt = time_edit.dateTime()
+        now = QDateTime.currentDateTime()
+        if target_dt <= now:
+            QMessageBox.warning(self, "警告", "定时时间必须晚于当前时间")
+            return None
+        time_edit.setEnabled(False)
+        remain_secs = int(now.secsTo(target_dt))
+        status_label.setText(
+            f"{desc} {target_dt.toString('MM-dd HH:mm')} ({self._fmt_remain(remain_secs)})")
+        timer.start(1000)
+        return target_dt
+
+    def _cancel_schedule_common(self, timer, time_edit, status_label):
+        """取消定时：停表、恢复输入、清空状态"""
+        timer.stop()
+        time_edit.setEnabled(True)
+        status_label.setText("")
+
+    def _tick_schedule_common(self, target, status_label, prefix):
+        """每秒检查：返回 (是否到时, 剩余秒数)；未到时刷新倒计时文案"""
+        now = QDateTime.currentDateTime()
+        remain_secs = int(now.secsTo(target))
+        if remain_secs > 0:
+            status_label.setText(f"{prefix} {self._fmt_remain(remain_secs)}")
+            return False, remain_secs
+        return True, remain_secs
+
+    def _ts_scheduled_check(self):
+        """每秒检查是否到达温度源定时开启时间"""
+        if not self.ts_sched_armed:
+            return
+        arrived, _ = self._tick_schedule_common(
+            self.ts_sched_target_time, self.ts_sched_status_label, "距开启")
+        if not arrived:
+            return
+        # 到达设定时间：按勾选项执行
+        self.ts_sched_armed = False
+        self._cancel_schedule_common(
+            self.ts_sched_timer, self.ts_sched_time_edit, self.ts_sched_status_label)
+        self._update_ts_sched_btn()
+
+        do_ts = self.ts_sched_ts_cb.isChecked()
+        do_coll = self.ts_sched_coll_cb.isChecked()
+        msgs = []
+        # 先启动温度源控制，再开始采集
+        if do_ts:
+            try:
+                # 未连接时先连接串口（temp_source_start 内部也会兜底重连）
+                if not self.temp_source_connected or self.temp_source_manager is None:
+                    self.status_label.setText("定时开启：正在连接温度源...")
+                    QApplication.processEvents()
+                    if not self._open_temp_source_serial():
+                        self.status_label.setText("定时开启：温度源连接失败")
+                        QMessageBox.warning(self, "警告", "定时开启失败：温度源连接失败")
+                        return
+                # 避免重复启动：已开启则跳过
+                already_on = False
+                if self.temp_source_connected and self.temp_source_manager is not None:
+                    if self._ts_device_type == 'Const 1210':
+                        already_on = (self._const1210_query_status() == '1')
+                    else:
+                        already_on = (self._query_outp_status() == '1')
+                if already_on:
+                    msgs.append("温控已在运行")
+                    self._update_ts_btn(True)
+                else:
+                    self.status_label.setText("定时开启：启动温度源...")
+                    QApplication.processEvents()
+                    # temp_source_start 内部会回读状态并写入 status_label，此处只做汇总
+                    self.temp_source_start()
+                    msgs.append("温控已启动")
+            except Exception as e:
+                msgs.append(f"温控启动失败:{e}")
+                print(f"[定时开启温控] 失败: {e}")
+        if do_coll:
+            try:
+                if self.test_running:
+                    msgs.append("采集已在运行")
+                else:
+                    self.start_collection()
+                    msgs.append("采集已开始")
+            except Exception as e:
+                msgs.append(f"采集启动失败:{e}")
+                print(f"[定时开启采集] 失败: {e}")
+        if msgs:
+            self.status_label.setText("定时开启：" + "，".join(msgs))
+
+    # ===== 定时停止（一个时间，按勾选停止采集 / 停止温控）=====
+    def _update_stop_sched_btn(self):
+        """根据定时停止状态更新按钮文字/颜色"""
+        if self.stop_sched_armed:
+            self._set_btn_style(self.stop_sched_btn, "取消定时", "#9E9E9E")
+        else:
+            self._set_btn_style(self.stop_sched_btn, "定时停止", "#f44336")
+        self.stop_sched_btn.setEnabled(True)
+
+    def _sync_t3_stop_exclusive(self):
+        """T3结束测试 与 定时停止 互斥：二者不可同时生效。
+        - 勾选 T3 时：禁用定时停止整行（若已设定则自动取消）
+        - 定时停止生效期间：禁用 T3 勾选框
+        """
+        if not hasattr(self, 'stop_sched_btn'):
+            return
+        # 勾选 T3 时若定时停止已设定，先取消（避免二者同时生效）
+        if self.manual_check_t3_cb.isChecked() and self.stop_sched_armed:
+            self._cancel_stop_scheduled()
+        enable_stop = not self.manual_check_t3_cb.isChecked()
+        self.stop_sched_time_edit.setEnabled(enable_stop)
+        self.stop_sched_coll_cb.setEnabled(enable_stop)
+        self.stop_sched_ts_cb.setEnabled(enable_stop)
+        self.stop_sched_btn.setEnabled(enable_stop)
+        # 定时停止生效期间禁用 T3 勾选
+        self.manual_check_t3_cb.setEnabled(not self.stop_sched_armed)
+
+    def _toggle_stop_scheduled(self):
+        """切换定时停止的设定/取消"""
+        if self.stop_sched_armed:
+            self._cancel_stop_scheduled()
+            self._sync_t3_stop_exclusive()
+        else:
+            self._arm_stop_scheduled()
+
+    def _arm_stop_scheduled(self):
+        """设定定时停止"""
+        # 至少选择一项
+        if not self.stop_sched_coll_cb.isChecked() and not self.stop_sched_ts_cb.isChecked():
+            QMessageBox.warning(self, "警告", "请至少勾选一项：停止采集 或 停止控制")
+            return
+        target = self._arm_schedule_common(
+            self.stop_sched_time_edit, self.stop_sched_status_label, self.stop_sched_timer)
+        if target is None:
+            return
+        self.stop_sched_target_time = target
+        self.stop_sched_armed = True
+        self._update_stop_sched_btn()
+        # 定时停止生效后禁用 T3 结束测试（互斥）
+        self._sync_t3_stop_exclusive()
+
+    def _cancel_stop_scheduled(self):
+        """取消已设定的定时停止"""
+        self.stop_sched_armed = False
+        self._cancel_schedule_common(
+            self.stop_sched_timer, self.stop_sched_time_edit, self.stop_sched_status_label)
+        self._update_stop_sched_btn()
+
+    def _stop_scheduled_check(self):
+        """每秒检查是否到达定时停止时间，按勾选项执行"""
+        if not self.stop_sched_armed:
+            return
+        arrived, _ = self._tick_schedule_common(
+            self.stop_sched_target_time, self.stop_sched_status_label, "距停止")
+        if not arrived:
+            return
+        self.stop_sched_armed = False
+        self._cancel_schedule_common(
+            self.stop_sched_timer, self.stop_sched_time_edit, self.stop_sched_status_label)
+        self._update_stop_sched_btn()
+        # 定时停止已失效，恢复 T3 勾选可用
+        self._sync_t3_stop_exclusive()
+
+        do_coll = self.stop_sched_coll_cb.isChecked()
+        do_ts = self.stop_sched_ts_cb.isChecked()
+        msgs = []
+        # 先停止采集（内部会保存数据并截图），再停止温度控制
+        if do_coll:
+            try:
+                if self.test_running:
+                    self.stop_collection()
+                    msgs.append("采集已停止")
+                else:
+                    msgs.append("采集未运行")
+            except Exception as e:
+                msgs.append(f"采集停止失败:{e}")
+                print(f"[定时停止采集] 失败: {e}")
+        if do_ts:
+            try:
+                if self.temp_source_connected and self.temp_source_manager is not None:
+                    self.temp_source_stop()
+                    msgs.append("温控已停止")
+                else:
+                    msgs.append("温控未连接")
+            except Exception as e:
+                msgs.append(f"温控停止失败:{e}")
+                print(f"[定时停止温控] 失败: {e}")
+        if msgs:
+            self.status_label.setText("定时停止：" + "，".join(msgs))
 
     def _toggle_seq(self):
         """切换顺序测试开始/停止"""
