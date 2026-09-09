@@ -1,0 +1,233 @@
+{
+    "devices": [
+        {
+            "enabled": false,
+            "connection": "serial",
+            "port": "COM13",
+            "baudrate": "9600",
+            "name": "设备1",
+            "read_command": "",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "curve_visible": true
+        },
+        {
+            "enabled": false,
+            "connection": "serial",
+            "port": "COM13",
+            "baudrate": "9600",
+            "name": "设备2",
+            "read_command": "",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "curve_visible": true
+        },
+        {
+            "enabled": false,
+            "connection": "serial",
+            "port": "COM13",
+            "baudrate": "9600",
+            "name": "设备3",
+            "read_command": "",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "curve_visible": true
+        },
+        {
+            "enabled": false,
+            "connection": "serial",
+            "port": "COM13",
+            "baudrate": "9600",
+            "name": "设备4",
+            "read_command": "",
+            "host": "",
+            "lan_port": "",
+            "auto_test": false,
+            "curve_visible": true
+        },
+        {
+            "enabled": false,
+            "connection": "lan",
+            "port": "",
+            "baudrate": "9600",
+            "name": "ConST1210 CH1",
+            "read_command": "MEASure:TEMPerature?\r\n",
+            "host": "192.168.0.182",
+            "lan_port": "8000",
+            "auto_test": false,
+            "curve_visible": true
+        },
+        {
+            "enabled": false,
+            "connection": "lan",
+            "port": "",
+            "baudrate": "9600",
+            "name": "ConST1210 CH3",
+            "read_command": "MEASure:TEMPerature?\r\n",
+            "host": "192.168.0.182",
+            "lan_port": "8000",
+            "auto_test": false,
+            "curve_visible": true
+        }
+    ],
+    "interval": 1000,
+    "test_interval": 0.0,
+    "ts_row_count": 3,
+    "temp_source_device": "Fluke 9250",
+    "stability_threshold": 0.05,
+    "row_setpoints": [
+        25.0,
+        25.0,
+        25.0
+    ],
+    "row_specs": [
+        0.5,
+        0.5,
+        0.5
+    ],
+    "row_mains": [
+        50.0,
+        50.0,
+        50.0
+    ],
+    "row_secs": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "row_checks": [
+        true,
+        true,
+        true
+    ],
+    "temp_source_conn_prefs": {
+        "Fluke 9250": "serial",
+        "Const 1210": "lan"
+    },
+    "temp_source_device_settings": {
+        "Fluke 9250": {
+            "port": "COM13",
+            "baud": 115200,
+            "ip": "",
+            "lan_port": 8000
+        },
+        "Const 1210": {
+            "port": "",
+            "baud": 115200,
+            "ip": "",
+            "lan_port": 8000
+        }
+    },
+    "temp_source_full_settings": {
+        "Fluke 9250": {
+            "row_count": 3,
+            "stability_threshold": 0.05,
+            "row_setpoints": [
+                25.0,
+                25.0,
+                25.0
+            ],
+            "row_specs": [
+                0.5,
+                0.5,
+                0.5
+            ],
+            "row_mains": [
+                50.0,
+                50.0,
+                50.0
+            ],
+            "row_secs": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "row_checks": [
+                true,
+                true,
+                true
+            ],
+            "row_main_pid_p": [
+                10.0,
+                10.0,
+                10.0
+            ],
+            "row_main_pid_i": [
+                200.0,
+                200.0,
+                200.0
+            ],
+            "row_main_pid_d": [
+                50.0,
+                50.0,
+                50.0
+            ],
+            "row_sec_pid_p": [
+                10.0,
+                10.0,
+                7.500000000000009
+            ],
+            "row_sec_pid_i": [
+                200.0,
+                200.0,
+                200.0
+            ],
+            "row_sec_pid_d": [
+                50.0,
+                50.0,
+                50.0
+            ],
+            "row_weights": [
+                "",
+                "",
+                ""
+            ]
+        }
+    },
+    "temp_source_conn": "serial",
+    "temp_source_port": "COM13",
+    "temp_source_baud": 115200,
+    "temp_source_ip": "",
+    "temp_source_lan_port": 8000,
+    "row_main_pid_p": [
+        10.0,
+        10.0,
+        10.0
+    ],
+    "row_main_pid_i": [
+        200.0,
+        200.0,
+        200.0
+    ],
+    "row_main_pid_d": [
+        50.0,
+        50.0,
+        50.0
+    ],
+    "row_sec_pid_p": [
+        10.0,
+        10.0,
+        7.500000000000009
+    ],
+    "row_sec_pid_i": [
+        200.0,
+        200.0,
+        200.0
+    ],
+    "row_sec_pid_d": [
+        50.0,
+        50.0,
+        50.0
+    ],
+    "row_weights": [
+        "",
+        "",
+        ""
+    ],
+    "manual_check_t3": true,
+    "manual_t3_stop_ts": false,
+    "manual_spec": 0.5
+}

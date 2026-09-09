@@ -1,0 +1,106 @@
+212 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+234 INFO: Python: 3.8.10
+286 INFO: Platform: Windows-10-10.0.19045-SP0
+295 INFO: Python environment: C:\python3
+314 INFO: wrote D:\Fluke\TCAL\Allen\test-software\T-cal_tester.spec
+343 INFO: Module search paths (PYTHONPATH):
+['D:\\Fluke\\TCAL\\Allen\\test-software',
+ 'C:\\Users\\FDC\\AppData\\Roaming\\JetBrains\\PyCharmCE2024.1\\plugins\\coding-copilot-jetbrains\\vsix\\extension\\out\\vendor\\shim',
+ 'C:\\python3\\python38.zip',
+ 'C:\\python3\\DLLs',
+ 'C:\\python3\\lib',
+ 'C:\\python3',
+ 'C:\\python3\\lib\\site-packages',
+ 'D:\\Fluke\\TCAL\\Allen\\test-software']
+1574 INFO: Appending 'datas' from .spec
+1603 INFO: checking Analysis
+1623 INFO: Building Analysis because Analysis-00.toc is non existent
+1624 INFO: Looking for Python shared library...
+1626 INFO: Using Python shared library: C:\python3\python38.dll
+1627 INFO: Running Analysis Analysis-00.toc
+1628 INFO: Target bytecode optimization level: 0
+1629 INFO: Initializing module dependency graph...
+1631 INFO: Initializing module graph hook caches...
+1706 INFO: Analyzing modules for base_library.zip ...
+2873 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+3032 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+5001 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+7883 INFO: Caching module dependency graph...
+7953 INFO: Analyzing D:\Fluke\TCAL\Allen\test-software\serial_data_collector.py
+8235 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+8252 INFO: Processing standard module hook 'hook-PyQt6.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+9358 INFO: Processing standard module hook 'hook-PyQt6.QtWidgets.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+13390 INFO: Processing standard module hook 'hook-PyQt6.QtCore.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+18884 INFO: Processing standard module hook 'hook-PyQt6.QtGui.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+39816 INFO: Processing standard module hook 'hook-pyqtgraph.py' from 'C:\\python3\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+821 WARNING: Failed to collect submodules for 'pyqtgraph.opengl' because importing 'pyqtgraph.opengl' raised: ModuleNotFoundError: No module named 'OpenGL'
+41478 INFO: hook-pyqtgraph: selected 'PyQt6' as Qt bindings because hook for 'PyQt6' has been run before.
+41546 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+43811 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+44314 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+44811 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+45601 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+46211 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+48814 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+48832 INFO: Processing standard module hook 'hook-PyQt6.uic.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+49468 INFO: Processing standard module hook 'hook-PyQt6.QtSvg.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+50308 INFO: Processing standard module hook 'hook-PyQt6.QtOpenGLWidgets.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+51369 INFO: Processing standard module hook 'hook-PyQt6.QtOpenGL.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+52555 INFO: Processing standard module hook 'hook-PyQt6.QtTest.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+53555 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+55239 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+57282 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+60747 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+64003 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+68087 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+68372 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\python3\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+68611 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+69948 INFO: Processing standard module hook 'hook-openpyxl.py' from 'C:\\python3\\lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74081 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+74574 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+75868 INFO: Processing module hooks (post-graph stage)...
+76456 WARNING: Hidden import "jinja2" not found!
+76505 INFO: Performing binary vs. data reclassification (809 entries)
+81331 INFO: Looking for ctypes DLLs
+81356 WARNING: Ignoring /System/Library/Frameworks/IOKit.framework/IOKit imported from C:\python3\lib\site-packages\serial\tools\list_ports_osx.py - only basenames are supported with ctypes imports!
+81357 WARNING: Ignoring /System/Library/Frameworks/CoreFoundation.framework/CoreFoundation imported from C:\python3\lib\site-packages\serial\tools\list_ports_osx.py - only basenames are supported with ctypes imports!
+81360 INFO: Analyzing run-time hooks ...
+81367 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+81382 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+81396 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+81411 INFO: Including run-time hook 'pyi_rth_pyqtgraph_multiprocess.py' from 'C:\\python3\\lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+81425 INFO: Including run-time hook 'pyi_rth_pyqt6.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+81440 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+81453 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\python3\\lib\\site-packages\\PyInstaller\\hooks'
+81537 INFO: Creating base_library.zip...
+81579 INFO: Looking for dynamic libraries
+C:\python3\lib\site-packages\PyInstaller\building\build_main.py:227: UserWarning: The numpy.array_api submodule is still experimental. See NEP 47.
+  __import__(package)
+83729 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\python3\\lib\\site-packages\\PyQt6\\Qt6\\bin', 'C:\\python3\\lib\\site-packages\\numpy\\.libs']
+83732 INFO: Extra DLL search directories (PATH): ['C:\\python3\\lib\\site-packages\\PyQt6\\Qt6\\bin']
+86495 INFO: Warnings written to D:\Fluke\TCAL\Allen\test-software\build\T-cal_tester\warn-T-cal_tester.txt
+86852 INFO: Graph cross-reference written to D:\Fluke\TCAL\Allen\test-software\build\T-cal_tester\xref-T-cal_tester.html
+86978 INFO: checking PYZ
+86979 INFO: Building PYZ because PYZ-00.toc is non existent
+86979 INFO: Building PYZ (ZlibArchive) D:\Fluke\TCAL\Allen\test-software\build\T-cal_tester\PYZ-00.pyz
+87838 INFO: Building PYZ (ZlibArchive) D:\Fluke\TCAL\Allen\test-software\build\T-cal_tester\PYZ-00.pyz completed successfully.
+87871 INFO: checking PKG
+87871 INFO: Building PKG because PKG-00.toc is non existent
+87873 INFO: Building PKG (CArchive) T-cal_tester.pkg
+87974 INFO: Building PKG (CArchive) T-cal_tester.pkg completed successfully.
+87976 INFO: Bootloader C:\python3\lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+87977 INFO: checking EXE
+87978 INFO: Building EXE because EXE-00.toc is non existent
+87979 INFO: Building EXE from EXE-00.toc
+87980 INFO: Copying bootloader EXE to D:\Fluke\TCAL\Allen\test-software\build\T-cal_tester\T-cal_tester.exe
+88047 INFO: Copying icon to EXE
+88060 INFO: Copying 0 resources to EXE
+88061 INFO: Embedding manifest in EXE
+88065 INFO: Appending PKG archive to EXE
+88070 INFO: Fixing EXE headers
+88209 INFO: Building EXE from EXE-00.toc completed successfully.
+88297 INFO: checking COLLECT
+88299 INFO: Building COLLECT because COLLECT-00.toc is non existent
+88300 INFO: Building COLLECT COLLECT-00.toc
+90178 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+90218 INFO: Build complete! The results are available in: D:\Fluke\TCAL\Allen\test-software\dist
