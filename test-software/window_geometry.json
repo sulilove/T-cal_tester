@@ -1,9 +1,9 @@
 {
   "main": {
-    "x": 0,
-    "y": 23,
-    "w": 1920,
-    "h": 1017
+    "x": 25,
+    "y": 31,
+    "w": 1800,
+    "h": 1061
   },
   "temp_ctrl": {
     "collapsed": false
@@ -16,9 +16,9 @@
     "collapsed": false
   },
   "sec_manual": {
-    "collapsed": false
+    "collapsed": true
   },
   "sec_axial": {
-    "collapsed": false
+    "collapsed": true
   }
 }

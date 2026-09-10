@@ -17,7 +17,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.9"
 
 import sys
 import os
@@ -2873,6 +2873,12 @@ class DataCollectorApp(QMainWindow):
         elif 'TEMP' in cmd and 'SOUR' in cmd:
             # SOUR:SENS:DATA? TEMP1/TEMP2 → Fluke 9250 传感器温度
             return 'Temperature', 'Temperature', '°C'
+        elif 'SOUR' in cmd and 'SENS' in cmd and 'DATA' in cmd:
+            # SOUR:SENS:DATA? → Fluke 9250 传感器数据（不含 TEMP 关键字时也能识别为温度）
+            return 'Temperature', 'Temperature', '°C'
+        elif 'FETC' in cmd or 'FETCH' in cmd:
+            # FETCh? (@1) / FETC? (@1) → Fluke 9250 读取测量数据（温度）
+            return 'Temperature', 'Temperature', '°C'
         elif 'OUTP' in cmd and 'DATA' in cmd:
             return 'DutyCycle', 'Duty Cycle', ''
         elif 'ELEC' in cmd:
@@ -2909,6 +2915,9 @@ class DataCollectorApp(QMainWindow):
                     'display_name': display_name,
                     'unit': unit
                 }
+                # 仅选中曲线（curve_visible）的通道参与坐标轴；未选中曲线的通道不建立轴
+                if not self.devices[i].get('curve_visible', True):
+                    continue
                 if qt not in quantity_map:
                     quantity_map[qt] = {
                         'display_name': display_name,
