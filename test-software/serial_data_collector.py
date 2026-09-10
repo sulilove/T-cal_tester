@@ -17,7 +17,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 
 import sys
 import os
@@ -1318,6 +1318,7 @@ class DataCollectorApp(QMainWindow):
         self.axial_timer = None          # 轴向测试计时器
         self.axial_start_time = None     # 轴向测试开始时间
         self.axial_test_duration = 0     # 轴向测试设定时长（秒）
+        self._last_accuracy_rows = None  # 最近一次 T3 的 accuracy 结果（供 auto_save_data 补写 sheet）
         self.axial_records = []          # 轴向测试记录 [(key, F_avg, M_avg, 记录时间), ...]（兼容旧字段）
         self.axial_data = {}             # 轴向测试数据字典 {key(float或str): {'F':..., 'M':..., 'time':...}}
         self.axial_keys = []             # 已添加到表格的 key 顺序列表（列顺序）。轴向=float 高度，径向=str 位置对
@@ -1449,9 +1450,11 @@ class DataCollectorApp(QMainWindow):
         self.left_splitter.setSizes([new_top_h, new_legend_h])
 
     def _update_title_datetime(self):
-        """在窗口标题的版本号旁刷新当前系统日期时间"""
+        """在底部状态栏刷新当前系统日期时间（标题栏仅保留版本号）"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.setWindowTitle(f"T-cal_tester v{APP_VERSION}    {now}")
+        self.setWindowTitle(f"T-cal_tester v{APP_VERSION}")
+        if hasattr(self, 'status_time_label'):
+            self.status_time_label.setText(now)
 
     def init_ui(self):
         self.setGeometry(100, 100, 1800, 950)
@@ -1580,6 +1583,10 @@ class DataCollectorApp(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel("就绪")
         self.status_bar.addWidget(self.status_label)
+        # 底部状态栏右侧显示系统时间
+        self.status_time_label = QLabel("")
+        self.status_time_label.setStyleSheet("color:#333333;font-size:11px;padding-right:6px;")
+        self.status_bar.addPermanentWidget(self.status_time_label)
 
         # 温度源控制区域（可折叠）——标题改为“测试模式”
         self.temp_ctrl_group = CollapsibleGroupBox("测试模式")
@@ -1638,12 +1645,32 @@ class DataCollectorApp(QMainWindow):
         self.ts_auto_btns_row = QHBoxLayout()
         self.ts_auto_btns_row.setSpacing(4)
         ts_auto_layout.addLayout(self.ts_auto_btns_row)
-        self.ts_rows_layout = ts_auto_layout  # SP 行所在布局引用
         temp_ctrl_layout.addWidget(self.ts_auto_cont)
         self.ts_auto_cont.toggled.connect(self._redistribute_left_splitter)
 
         # 表头加入自动测试框内（SP 表格上方）
         ts_auto_layout.addLayout(header_layout)
+
+        # SP 行区域放入滚动区：条目过多时可滚动，避免把左侧面板撑得过高
+        self.ts_rows_scroll = QScrollArea()
+        self.ts_rows_scroll.setWidgetResizable(True)
+        self.ts_rows_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.ts_rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.ts_rows_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.ts_rows_scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{width:8px;background:#f0f0f0;margin:0px;}"
+            "QScrollBar::handle:vertical{background:#c0c0c0;border-radius:4px;min-height:20px;}"
+            "QScrollBar::handle:vertical:hover{background:#a0a0a0;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}")
+        ts_rows_container = QWidget()
+        # SP 行所在布局：指向滚动区内部容器的布局
+        self.ts_rows_layout = QVBoxLayout(ts_rows_container)
+        self.ts_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.ts_rows_layout.setSpacing(2)
+        self.ts_rows_scroll.setWidget(ts_rows_container)
+        ts_auto_layout.addWidget(self.ts_rows_scroll)
+        self._update_ts_rows_scroll_height()
 
         # 行设置
         self.row_setpoint_spins = []
@@ -1795,6 +1822,9 @@ class DataCollectorApp(QMainWindow):
             # SP 行加入自动测试框内的布局
             self.ts_rows_layout.addWidget(ts_container)
             self._ts_row_layouts.append(ts_container)
+
+        # 初始行创建完成后，同步滚动区高度（默认3行自适应，多于6行后出现滚动条）
+        self._update_ts_rows_scroll_height()
 
         # 通用按钮样式
         btn_s = "QPushButton{color:white;font-weight:bold;font-size:11px;border-radius:4px;}"
@@ -1970,7 +2000,7 @@ class DataCollectorApp(QMainWindow):
         self.manual_check_t3_cb = QCheckBox("T3结束测试")
         self.manual_check_t3_cb.setChecked(True)
         self.manual_check_t3_cb.setStyleSheet("font-size:11px;color:#1f77b4;")
-        self.manual_check_t3_cb.setToolTip("勾选后由 T3 时刻判断结束；与「定时停止」互斥，二者不可同时生效")
+        self.manual_check_t3_cb.setToolTip("勾选后由 T3 时刻判断结束；可与「定时停止」同时设定，谁先满足谁先触发")
         self.manual_check_t3_cb.stateChanged.connect(
             lambda v: (self.save_config(), self._sync_t3_stop_exclusive()))
         collect_row.addWidget(self.manual_check_t3_cb)
@@ -1980,6 +2010,19 @@ class DataCollectorApp(QMainWindow):
         self.manual_t3_stop_ts_cb.setStyleSheet("font-size:11px;color:#e65100;")
         self.manual_t3_stop_ts_cb.stateChanged.connect(lambda v: self.save_config())
         collect_row.addWidget(self.manual_t3_stop_ts_cb)
+        # stability / accuracy 记录开关：勾选后 T3 完成时记录对应 sheet（默认都选中）
+        self.manual_stability_cb = QCheckBox("stability")
+        self.manual_stability_cb.setChecked(True)
+        self.manual_stability_cb.setStyleSheet("font-size:11px;color:#6A1B9A;")
+        self.manual_stability_cb.setToolTip("勾选后 T3 完成时记录 stability sheet")
+        self.manual_stability_cb.stateChanged.connect(lambda v: self.save_config())
+        collect_row.addWidget(self.manual_stability_cb)
+        self.manual_accuracy_cb = QCheckBox("accuracy")
+        self.manual_accuracy_cb.setChecked(True)
+        self.manual_accuracy_cb.setStyleSheet("font-size:11px;color:#00695C;")
+        self.manual_accuracy_cb.setToolTip("勾选后 T3 完成时记录 accuracy sheet（通道5/通道1 倒数10分钟 Max/Avg/Min）")
+        self.manual_accuracy_cb.stateChanged.connect(lambda v: self.save_config())
+        collect_row.addWidget(self.manual_accuracy_cb)
         self.record_btn = make_button("记录数据", "#E91E63", self.record_current_data, enabled=False)
         collect_row.addWidget(self.record_btn)
         self.reset_stats_btn = make_button("重置统计", "#FF9800", self.reset_stats_all)
@@ -2080,7 +2123,7 @@ class DataCollectorApp(QMainWindow):
         stop_sched_row.addStretch()
         manual_v.addLayout(stop_sched_row)
         self._update_stop_sched_btn()
-        # T3结束测试 与 定时停止 互斥，初始化同步一次
+        # T3结束测试 与 定时停止 不互斥，初始化同步一次（保持控件可用）
         self._sync_t3_stop_exclusive()
 
         # 手动测试外框容器加入温度源控制布局
@@ -2443,7 +2486,7 @@ class DataCollectorApp(QMainWindow):
                     df[col_name] = data
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-                if self.auto_test_summary:
+                if self.auto_test_summary and self._stability_sheet_enabled():
                     pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
             # 轴向/径向结果写入对应 sheet（axis / radial）
             if getattr(self, 'axial_data', None):
@@ -2475,7 +2518,7 @@ class DataCollectorApp(QMainWindow):
             else:
                 key = cell_text or c['key']
                 col_label = str(key)
-            rec = self.axial_data.get(c['key'], {})
+            rec = self.axial_data.get(key, {})
             data[col_label] = [
                 None if rec.get('F') is None else round(rec['F'], 4),
                 None if rec.get('M') is None else round(rec['M'], 4),
@@ -2654,6 +2697,22 @@ class DataCollectorApp(QMainWindow):
             self.status_label.setText("定时开启：" + "，".join(msgs))
 
     # ===== 定时停止（一个时间，按勾选停止采集 / 停止温控）=====
+    def _update_ts_rows_scroll_height(self):
+        """根据自动测试行数调整滚动区高度：
+        行数少时自适应高度（不留空白），超过阈值后固定高度并出现滚动条。"""
+        scroll = getattr(self, 'ts_rows_scroll', None)
+        if scroll is None:
+            return
+        try:
+            n = int(getattr(self, '_ts_row_count', 0) or 0)
+            row_h = 30      # 单行大致高度
+            max_rows = 6    # 最多直接显示的行数，超出后滚动
+            h = max(row_h + 4, min(n * row_h + 4, max_rows * row_h + 4))
+            scroll.setMinimumHeight(h)
+            scroll.setMaximumHeight(h)
+        except Exception:
+            pass
+
     def _update_stop_sched_btn(self):
         """根据定时停止状态更新按钮文字/颜色"""
         if self.stop_sched_armed:
@@ -2663,22 +2722,24 @@ class DataCollectorApp(QMainWindow):
         self.stop_sched_btn.setEnabled(True)
 
     def _sync_t3_stop_exclusive(self):
-        """T3结束测试 与 定时停止 互斥：二者不可同时生效。
-        - 勾选 T3 时：禁用定时停止整行（若已设定则自动取消）
-        - 定时停止生效期间：禁用 T3 勾选框
-        """
+        """T3结束测试 与 定时停止 不互斥：二者可同时设定、独立生效。
+        - 不再因勾选 T3 而自动取消定时停止
+        - 不再互相禁用控件
+        - 谁的条件先满足就先触发（T3 到达 或 定时时间到）
+        保留此方法仅为兼容已有调用点，确保相关控件始终可用。"""
         if not hasattr(self, 'stop_sched_btn'):
             return
-        # 勾选 T3 时若定时停止已设定，先取消（避免二者同时生效）
-        if self.manual_check_t3_cb.isChecked() and self.stop_sched_armed:
-            self._cancel_stop_scheduled()
-        enable_stop = not self.manual_check_t3_cb.isChecked()
-        self.stop_sched_time_edit.setEnabled(enable_stop)
-        self.stop_sched_coll_cb.setEnabled(enable_stop)
-        self.stop_sched_ts_cb.setEnabled(enable_stop)
-        self.stop_sched_btn.setEnabled(enable_stop)
-        # 定时停止生效期间禁用 T3 勾选
-        self.manual_check_t3_cb.setEnabled(not self.stop_sched_armed)
+        # 不互斥：相关控件始终保持可用
+        for w in (self.stop_sched_time_edit, self.stop_sched_coll_cb,
+                  self.stop_sched_ts_cb, self.stop_sched_btn):
+            try:
+                w.setEnabled(True)
+            except Exception:
+                pass
+        try:
+            self.manual_check_t3_cb.setEnabled(True)
+        except Exception:
+            pass
 
     def _toggle_stop_scheduled(self):
         """切换定时停止的设定/取消"""
@@ -2701,7 +2762,7 @@ class DataCollectorApp(QMainWindow):
         self.stop_sched_target_time = target
         self.stop_sched_armed = True
         self._update_stop_sched_btn()
-        # 定时停止生效后禁用 T3 结束测试（互斥）
+        # 定时停止生效后同步状态（不互斥，T3 判断仍可同时生效）
         self._sync_t3_stop_exclusive()
 
     def _cancel_stop_scheduled(self):
@@ -3785,7 +3846,8 @@ class DataCollectorApp(QMainWindow):
         QMessageBox.information(self, "成功", f"行{row_idx+1} SP 设置成功: {sp}°C")
 
     def temp_source_start(self):
-        """启动温度源输出：先发送并验证 PID 参数，再发送 OUTP:STAT 1
+        """启动温度源输出：自动/顺序测试时先发送并验证 PID 参数，再发送 OUTP:STAT 1；
+           手动测试启动不发送 PID，避免把自动测试表格的参数带入手动测试。
            Const 1210: 跳过 PID，直接使用预留的控制命令"""
         is_const1210 = (self._ts_device_type == 'Const 1210')
 
@@ -3824,13 +3886,16 @@ class DataCollectorApp(QMainWindow):
             return
 
         # ---- Fluke 9250 原有逻辑 ----
-        # 1) 发送并验证第一行的 PID 参数（不受勾选状态影响）
-        pid_row = 0
-        self.status_label.setText(f"设置行{pid_row+1} PID 参数...")
-        QApplication.processEvents()
-        if not self._send_pid_params(pid_row):
-            self.status_label.setText("PID 参数设置失败，启动已取消")
-            return
+        # 1) PID 参数：仅在自动/顺序测试时发送。
+        #    手动测试启动温度源不发送 PID，避免把自动测试表格里的参数带入手动测试
+        #    （PID 留空时 _send_pid_params 本身也会跳过该条，此处进一步按模式区分）
+        if self.sequential_running:
+            pid_row = 0
+            self.status_label.setText(f"设置行{pid_row+1} PID 参数...")
+            QApplication.processEvents()
+            if not self._send_pid_params(pid_row):
+                self.status_label.setText("PID 参数设置失败，启动已取消")
+                return
 
         # 2) 发送 OUTP:STAT 1 并验证
         self.status_label.setText("发送启动命令...")
@@ -4198,6 +4263,17 @@ class DataCollectorApp(QMainWindow):
                     bg_thread.join(timeout=10)
 
                 # 1) 先保存数据（含avg1/avg2记录）
+                #    自动测试不受 stability/accuracy 开关影响，始终计算并记录两个 sheet
+                try:
+                    acc_rows = self._build_accuracy_rows(window_minutes=10)
+                    if acc_rows:
+                        self._last_accuracy_rows = acc_rows
+                except Exception as e:
+                    print(f"[顺序测试] accuracy 计算失败: {e}")
+                try:
+                    self.auto_test_summary = self._build_auto_test_summary()
+                except Exception as e:
+                    print(f"[顺序测试] stability 汇总构建失败: {e}")
                 self.has_unsaved_data = True
                 self.auto_save_data()
                 self.has_unsaved_data = False
@@ -4373,6 +4449,8 @@ class DataCollectorApp(QMainWindow):
         self.current_data_file = os.path.join(save_dir, base_name)
         # 重置手动测试完成标记（开始测试时）
         self._manual_test_done = False
+        # 清空上一次的 accuracy 缓存（新测试的 Excel 不应带入旧结果）
+        self._last_accuracy_rows = None
         # 一开始采集就立即生成 Excel 文件（含空 sheet 结构）
         try:
             from openpyxl import Workbook
@@ -4463,23 +4541,9 @@ class DataCollectorApp(QMainWindow):
             print(f"[screenshot] 截图失败: {e}")
 
     def _save_screenshot_with_overlay(self, filepath, timestamp, jpg=False):
-        """截取窗口并保存，在图像顶部绘制程序版本号和当前系统时间（半透明黑底白字）"""
+        """截取窗口并直接保存，不再叠加版本号或系统时间"""
         try:
             pixmap = self.grab()
-            painter = QPainter(pixmap)
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            text = f"T-cal_tester v{APP_VERSION}    {now_str}"
-            font = QFont(font_family, 16)
-            font.setBold(True)
-            painter.setFont(font)
-            fm = QFontMetrics(font)
-            tw = fm.horizontalAdvance(text)
-            th = fm.height()
-            # 半透明黑底条
-            painter.fillRect(0, 0, tw + 20, th + 10, QColor(0, 0, 0, 140))
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(10, th + 2, text)
-            painter.end()
             if jpg:
                 pixmap.save(filepath, 'JPG', 95)
             else:
@@ -4571,11 +4635,19 @@ class DataCollectorApp(QMainWindow):
             full_path = os.path.abspath(self.current_data_file)
             with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-                if self.auto_test_summary:
+                # 自动测试始终记录 stability，手动测试受开关控制
+                if self.auto_test_summary and (self._stability_sheet_enabled() or self.sequential_running):
                     pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
             # axis/radial 模式且已有轴向结果时，补写对应 sheet（ExcelWriter 重写会清掉它）
             if getattr(self, '_current_mode_tag', '') in ('axis', 'radial') and getattr(self, 'axial_data', None):
                 self._save_axis_sheet()
+            # accuracy sheet 补写：ExcelWriter 重写会清掉它（尤其 stop_collection 内的再次保存）
+            # 自动测试始终记录 accuracy，手动测试受开关控制
+            if getattr(self, '_last_accuracy_rows', None) and (self._accuracy_sheet_enabled() or self.sequential_running):
+                try:
+                    self._save_accuracy_sheet(self._last_accuracy_rows)
+                except Exception as e:
+                    print(f"[auto_save_data] accuracy 补写失败: {e}")
             self.status_label.setText(f"数据已自动保存至: {full_path}")
             print(f"[auto_save_data] Excel已保存: {full_path}")
         except Exception as e:
@@ -4632,8 +4704,18 @@ class DataCollectorApp(QMainWindow):
                 full_path = os.path.abspath(self.current_data_file)
                 with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
                     df.to_excel(writer, sheet_name='实时数据', index=False)
-                    if self.auto_test_summary:
+                    # 自动测试始终记录 stability，手动测试受开关控制
+                    if self.auto_test_summary and (self._stability_sheet_enabled() or self.sequential_running):
                         pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
+                # 补写 axis/radial 与 accuracy（ExcelWriter 重写会清掉它们）
+                try:
+                    if getattr(self, '_current_mode_tag', '') in ('axis', 'radial') and getattr(self, 'axial_data', None):
+                        self._save_axis_sheet()
+                    # 自动测试始终记录 accuracy，手动测试受开关控制
+                    if getattr(self, '_last_accuracy_rows', None) and (self._accuracy_sheet_enabled() or self.sequential_running):
+                        self._save_accuracy_sheet(self._last_accuracy_rows)
+                except Exception:
+                    pass
                 print(f"[应急保存] 数据已保存至: {full_path}")
             except Exception as e:
                 import traceback
@@ -4835,7 +4917,7 @@ class DataCollectorApp(QMainWindow):
                     df[col_name] = data
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-                if self.auto_test_summary:
+                if self.auto_test_summary and self._stability_sheet_enabled():
                     pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
             QMessageBox.information(self, "成功", f"数据已保存至：{path}")
             self.status_label.setText(f"数据已手动保存至: {path}")
@@ -5329,7 +5411,7 @@ class DataCollectorApp(QMainWindow):
                 else:
                     key = cell_text or c['key']
                     col_label = str(key)
-                rec = self.axial_data.get(c['key'], {})
+                rec = self.axial_data.get(key, {})
                 data[col_label] = [
                     None if rec.get('F') is None else round(rec['F'], 4),
                     None if rec.get('M') is None else round(rec['M'], 4),
@@ -5371,7 +5453,7 @@ class DataCollectorApp(QMainWindow):
                 else:
                     key = cell_text or c['key']
                     col_label = str(key)
-                rec = self.axial_data.get(c['key'], {})
+                rec = self.axial_data.get(key, {})
                 data[col_label] = [
                     None if rec.get('F') is None else round(rec['F'], 4),
                     None if rec.get('M') is None else round(rec['M'], 4),
@@ -5665,8 +5747,18 @@ class DataCollectorApp(QMainWindow):
             full_path = os.path.abspath(filepath)
             with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='实时数据', index=False)
-                if getattr(self, 'auto_test_summary', None):
+                # 自动测试始终记录 stability，手动测试受开关控制
+                if getattr(self, 'auto_test_summary', None) and (self._stability_sheet_enabled() or self.sequential_running):
                     pd.DataFrame([self.auto_test_summary]).to_excel(writer, sheet_name='stability', index=False)
+            # 补写 axis/radial 与 accuracy（ExcelWriter 重写会清掉它们）
+            try:
+                if getattr(self, '_current_mode_tag', '') in ('axis', 'radial') and getattr(self, 'axial_data', None):
+                    self._save_axis_sheet()
+                # 自动测试始终记录 accuracy，手动测试受开关控制
+                if getattr(self, '_last_accuracy_rows', None) and (self._accuracy_sheet_enabled() or self.sequential_running):
+                    self._save_accuracy_sheet(self._last_accuracy_rows)
+            except Exception:
+                pass
         except Exception as e:
             import traceback
             print(f"[_save_excel_bg] 后台保存Excel失败: {e}")
@@ -5982,7 +6074,7 @@ class DataCollectorApp(QMainWindow):
         self.row_send_btns.append(send_btn)
 
         # 与前3行完全相同的"标签+输入框"组合容器，保证各列垂直对齐
-        sp = mk_spin(0, 25, 1, 1, 70, nullable=True)  # 新行留空，使用默认值
+        sp = mk_spin(0, 25, 0.01, 2, 70, nullable=True)  # 新行留空；小数位/步长与初始行一致
         sp.valueChanged.connect(lambda v, idx=row_idx: self._on_row_setpoint_changed(idx, v))
         row_layout.addWidget(self._make_labeled("SP", sp))
         self.row_setpoint_spins.append(sp)
@@ -6019,7 +6111,7 @@ class DataCollectorApp(QMainWindow):
         row_layout.addWidget(g); advanced.append(g)
         self.row_main_pid_d.append(md)
 
-        sec_spin = mk_spin(0, 0, 1, 1, 55, nullable=True)  # 新行留空，使用默认值
+        sec_spin = mk_spin(0, 0, 0.1, 2, 55, nullable=True)  # 新行留空；小数位/步长与初始行一致
         sec_spin.valueChanged.connect(lambda v, idx=row_idx: self._on_row_sec_changed(idx, v))
         g = self._make_labeled("S", sec_spin)
         row_layout.addWidget(g); advanced.append(g)
@@ -6064,6 +6156,9 @@ class DataCollectorApp(QMainWindow):
             for w in advanced:
                 w.setVisible(False)
 
+        # 行数变化后同步滚动区高度（超出显示行数后出现滚动条）
+        self._update_ts_rows_scroll_height()
+
         self.save_config()
 
     def _ts_remove_row(self, silent=False):
@@ -6106,6 +6201,8 @@ class DataCollectorApp(QMainWindow):
         if self._ts_row_advanced_widgets:
             self._ts_row_advanced_widgets.pop()
         self._ts_row_count -= 1
+        # 行数变化后同步滚动区高度
+        self._update_ts_rows_scroll_height()
         if not silent:
             self.save_config()
 
@@ -6181,7 +6278,14 @@ class DataCollectorApp(QMainWindow):
             except Exception as e:
                 print(f"[手动测试完成] Excel保存失败: {e}")
             # 2) 计算 accuracy：通道5(User=dev4)和通道1(Fix=dev0)在 T3 时刻倒数 10min 的 max/avg/min
-            accuracy_rows = self._build_accuracy_rows(window_minutes=10)
+            #    仅在勾选 accuracy 时才计算记录
+            accuracy_rows = []
+            if self._accuracy_sheet_enabled():
+                accuracy_rows = self._build_accuracy_rows(window_minutes=10)
+            # 缓存 accuracy 结果：后续 auto_save_data（如 stop_collection 内）会重写文件，
+            # 需要据此补写 accuracy sheet，否则会被覆盖丢失
+            if accuracy_rows:
+                self._last_accuracy_rows = accuracy_rows
             # 3) 保存 accuracy sheet 到同一 Excel
             accuracy_ok = False
             try:
@@ -6195,15 +6299,18 @@ class DataCollectorApp(QMainWindow):
                 self._save_whole_window_screenshot('T3')
             except Exception as e:
                 print(f"[手动测试完成] 截图失败: {e}")
-            msg = "数据截图已保存"
-            if stability_ok and accuracy_ok:
-                msg += "\nstability 与 accuracy 全部保存完成"
-            elif stability_ok:
-                msg += "\n注意：accuracy 写入失败，仅 stability 已保存"
-            elif accuracy_ok:
-                msg += "\n注意：stability 写入失败，仅 accuracy 已保存"
+            stability_on = self._stability_sheet_enabled()
+            accuracy_on = self._accuracy_sheet_enabled()
+            parts = []
+            if stability_on:
+                parts.append("stability 已保存" if stability_ok else "stability 保存失败")
             else:
-                msg += "\n注意：stability 与 accuracy 均写入失败"
+                parts.append("stability 未记录（未勾选）")
+            if accuracy_on:
+                parts.append("accuracy 已保存" if accuracy_ok else "accuracy 保存失败")
+            else:
+                parts.append("accuracy 未记录（未勾选）")
+            msg = "数据截图已保存\n" + "，".join(parts)
             QMessageBox.information(self, "完成", msg)
             self.status_label.setText("测试完成，数据与截图已保存，停止采集")
             # T3 到达后：若勾选"T3停止控制"，停止温度源输出
@@ -6317,6 +6424,26 @@ class DataCollectorApp(QMainWindow):
             except Exception:
                 pass
 
+    def _stability_sheet_enabled(self):
+        """是否记录 stability sheet（默认记录；控件缺失时视为启用）"""
+        cb = getattr(self, 'manual_stability_cb', None)
+        if cb is None:
+            return True
+        try:
+            return bool(cb.isChecked())
+        except Exception:
+            return True
+
+    def _accuracy_sheet_enabled(self):
+        """是否记录 accuracy sheet（默认记录；控件缺失时视为启用）"""
+        cb = getattr(self, 'manual_accuracy_cb', None)
+        if cb is None:
+            return True
+        try:
+            return bool(cb.isChecked())
+        except Exception:
+            return True
+
     def _build_auto_test_summary(self):
         """T3 完成后构建跨通道汇总。
         通道编号映射 dev_id：通道1=dev0, 通道2=dev1, 通道3=dev2, 通道4=dev3, 通道5=dev4。
@@ -6350,19 +6477,36 @@ class DataCollectorApp(QMainWindow):
                         return res[0]
             except Exception:
                 pass
+            # 最终兜底：直接用该通道缓冲区原始数据计算，
+            # 避免因波动窗口过滤无结果而漏记 User/U-Std 等字段
+            try:
+                buf = list(self.data_buffer.get(d) or [])
+                if buf:
+                    arr = np.asarray(buf[-600:], dtype=float)
+                    arr = arr[~np.isnan(arr)]
+                    if arr.size > 0:
+                        if key == 'avg2':
+                            return float(np.mean(arr))
+                        if key == 'std2':
+                            return float(np.std(arr))
+            except Exception:
+                pass
             return None
 
         # 通道1（dev0）F-Max/F-Min：T3 时刻所在 30min 窗口的极值
+        # 注意：time_buffer 存的是相对 start_time 的秒数（从 0 开始增长），
+        # 窗口判断必须用同一基准（相对秒），不能用 time.time() 绝对时间戳，
+        # 否则 tb[i] >= start_ts 永远为 False，导致 F-Max/F-Min 永远为空
         f_max = f_min = None
         try:
             if 0 < len(self.data_buffer) and len(self.data_buffer[0]) > 0:
-                now_ts = time.time()
-                start_ts = now_ts - 30 * 60
+                now_rel = (time.time() - self.start_time) if getattr(self, 'start_time', None) else 0.0
+                start_rel = max(0.0, now_rel - 30 * 60)
                 vals = []
                 tb = self.time_buffer[0]
                 db = self.data_buffer[0]
                 for i, v in enumerate(db):
-                    if i < len(tb) and tb[i] >= start_ts:
+                    if i < len(tb) and tb[i] >= start_rel:
                         vals.append(v)
                 if vals:
                     f_max = float(np.max(vals))
@@ -6777,6 +6921,10 @@ class DataCollectorApp(QMainWindow):
                         self.ts_manual_spec_spin.setValue(float(cfg['manual_spec']))
                     except (TypeError, ValueError):
                         pass
+                if 'manual_stability' in cfg:
+                    self.manual_stability_cb.setChecked(bool(cfg['manual_stability']))
+                if 'manual_accuracy' in cfg:
+                    self.manual_accuracy_cb.setChecked(bool(cfg['manual_accuracy']))
 
                 # 加载完成后，根据当前设备的偏好恢复通讯方式
                 # （若设备类型未变，currentTextChanged 信号不会触发，需手动恢复）
@@ -6859,6 +7007,8 @@ class DataCollectorApp(QMainWindow):
             "manual_check_t3": self.manual_check_t3_cb.isChecked(),
             "manual_t3_stop_ts": self.manual_t3_stop_ts_cb.isChecked(),
             "manual_spec": self.ts_manual_spec_spin.value(),
+            "manual_stability": self.manual_stability_cb.isChecked(),
+            "manual_accuracy": self.manual_accuracy_cb.isChecked(),
         }
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:

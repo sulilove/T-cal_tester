@@ -1,7 +1,7 @@
 {
     "devices": [
         {
-            "enabled": false,
+            "enabled": true,
             "connection": "serial",
             "port": "COM13",
             "baudrate": "9600",
@@ -10,7 +10,8 @@
             "host": "",
             "lan_port": "",
             "auto_test": false,
-            "curve_visible": true
+            "curve_visible": true,
+            "read_interval": 1.0
         },
         {
             "enabled": false,
@@ -168,7 +169,7 @@
             "row_sec_pid_p": [
                 10.0,
                 10.0,
-                7.500000000000009
+                7.5
             ],
             "row_sec_pid_i": [
                 200.0,
@@ -210,7 +211,7 @@
     "row_sec_pid_p": [
         10.0,
         10.0,
-        7.500000000000009
+        7.5
     ],
     "row_sec_pid_i": [
         200.0,

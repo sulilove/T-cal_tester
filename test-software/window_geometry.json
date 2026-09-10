@@ -1,16 +1,16 @@
 {
   "main": {
-    "x": 100,
-    "y": 131,
-    "w": 1800,
-    "h": 957
+    "x": 0,
+    "y": 23,
+    "w": 1920,
+    "h": 1017
   },
   "temp_ctrl": {
     "collapsed": false
   },
   "main_split": [
-    905,
-    991
+    942,
+    954
   ],
   "sec_auto": {
     "collapsed": false
