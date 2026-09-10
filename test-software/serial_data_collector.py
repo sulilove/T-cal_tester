@@ -17,7 +17,7 @@
 14. 应急自动保存：程序意外关机或崩溃时自动保存最新数据
 """
 
-APP_VERSION = "1.1.9"
+APP_VERSION = "1.1.10"
 
 import sys
 import os
@@ -4288,6 +4288,14 @@ class DataCollectorApp(QMainWindow):
                 self.has_unsaved_data = False
                 self._sequential_saving = False
 
+                # 1.5) 先截图：必须在停止采集线程、停止温度源输出、清空界面之前，
+                #      否则截图里的实时值/波动/统计与 T0~T3 标注已被清空
+                try:
+                    QApplication.processEvents()
+                    self._save_whole_window_screenshot('stop')
+                except Exception as e:
+                    print(f"[顺序测试] 截图失败: {e}")
+
                 # 2) 停止采集线程
                 self.test_running = False
                 self.save_timer.stop()
@@ -4328,8 +4336,6 @@ class DataCollectorApp(QMainWindow):
                 self._reset_auto_test_state()
                 self.legend_widget.clear_auto_test()
                 self.status_label.setText(f"行{row+1}采集完成，温度源已停止")
-                # 行采集完成：截取整窗截图（命名为 setpoint-时间，保存到 test data）
-                self._save_whole_window_screenshot('stop')
             except Exception as e:
                 # 任何异常都要确保温度源关闭，但不中断顺序测试
                 import traceback
@@ -4458,6 +4464,8 @@ class DataCollectorApp(QMainWindow):
         self.current_data_file = os.path.join(save_dir, base_name)
         # 重置手动测试完成标记（开始测试时）
         self._manual_test_done = False
+        # 重置截图去重标记（新测试的停止截图不应被上一次跳过）
+        self._skip_next_stop_screenshot = False
         # 清空上一次的 accuracy 缓存（新测试的 Excel 不应带入旧结果）
         self._last_accuracy_rows = None
         # 一开始采集就立即生成 Excel 文件（含空 sheet 结构）
@@ -4561,6 +4569,16 @@ class DataCollectorApp(QMainWindow):
             print(f"[截图] 保存失败: {e}")
 
     def stop_collection(self):
+        # 先截图：必须在停止采集线程、断开串口、清空界面之前，
+        # 否则截图里的实时数据、波动/统计与 T0~T3 标注已被清空
+        # 若 T3 完成流程已截过图，则不再重复截图
+        if not getattr(self, '_skip_next_stop_screenshot', False):
+            try:
+                QApplication.processEvents()
+                self._save_whole_window_screenshot('stop')
+            except Exception as e:
+                print(f"[stop_collection] 截图失败: {e}")
+        self._skip_next_stop_screenshot = False
         self.test_running = False
         self.save_timer.stop()
         if hasattr(self, 'legend_widget'):
@@ -4574,6 +4592,24 @@ class DataCollectorApp(QMainWindow):
         # 强制关闭所有 SharedSerialManager 实例，中断阻塞在 send_command 上的线程
         for mgr in list(SharedSerialManager._instances.values()):
             mgr.disconnect()
+        # 兜底：若未经过 T3 完成流程（例如某个 stability 通道始终无数据，
+        # 导致完成判定一直未触发），在停止采集时补算 accuracy 并缓存，
+        # 交由 auto_save_data 写入 accuracy sheet，避免整个 sheet 丢失
+        try:
+            if (self._accuracy_sheet_enabled()
+                    and not getattr(self, '_last_accuracy_rows', None)
+                    and getattr(self, '_current_mode_tag', None) not in ('axis', 'radial')
+                    and (getattr(self, 'sequential_running', False)
+                         or (getattr(self, 'manual_check_t3_cb', None)
+                             and self.manual_check_t3_cb.isChecked()))
+                    and getattr(self, 'start_time', None)
+                    and any(len(self.data_buffer[i]) > 0 for i in range(self._dev_row_count))):
+                rows = self._build_accuracy_rows(window_minutes=10)
+                if rows:
+                    self._last_accuracy_rows = rows
+                    print("[stop_collection] 已补算 accuracy 结果")
+        except Exception as e:
+            print(f"[stop_collection] accuracy 兜底计算失败: {e}")
         if self.has_unsaved_data:
             self.auto_save_data()
         else:
@@ -4581,8 +4617,6 @@ class DataCollectorApp(QMainWindow):
             has_data = any(len(self.data_buffer[i]) > 0 for i in range(self._dev_row_count))
             if has_data:
                 self.auto_save_data()
-        # 停止采集后截取整个软件窗口（文件名温度策略：顺序测试用 setpoint，否则第一个通道实时值）
-        self._save_whole_window_screenshot('stop')
         # 如果温度源控制仍在使用，需立即重连共享串口
         if self.sequential_running:
             port, baudrate = self._find_tc_main_device()
@@ -4723,8 +4757,8 @@ class DataCollectorApp(QMainWindow):
                     # 自动测试始终记录 accuracy，手动测试受开关控制
                     if getattr(self, '_last_accuracy_rows', None) and (self._accuracy_sheet_enabled() or self.sequential_running):
                         self._save_accuracy_sheet(self._last_accuracy_rows)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[应急保存] 补写 axis/accuracy 失败: {e}")
                 print(f"[应急保存] 数据已保存至: {full_path}")
             except Exception as e:
                 import traceback
@@ -5766,8 +5800,8 @@ class DataCollectorApp(QMainWindow):
                 # 自动测试始终记录 accuracy，手动测试受开关控制
                 if getattr(self, '_last_accuracy_rows', None) and (self._accuracy_sheet_enabled() or self.sequential_running):
                     self._save_accuracy_sheet(self._last_accuracy_rows)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[_save_excel_bg] 补写 axis/accuracy 失败: {e}")
         except Exception as e:
             import traceback
             print(f"[_save_excel_bg] 后台保存Excel失败: {e}")
@@ -6265,6 +6299,11 @@ class DataCollectorApp(QMainWindow):
             # 勾选了 Stability 且启用的通道
             auto_chs = [d for d in range(self._dev_row_count)
                         if self.devices[d].get('auto_test', False) and self.devices[d].get('enabled', False)]
+            # 过滤掉始终无数据（idle 且缓冲区为空）的通道，避免其永不完成而阻塞整体完成判定
+            # （与 _sequential_tick 的处理保持一致）
+            auto_chs = [d for d in auto_chs
+                        if self.auto_test_state.get(d, {}).get('phase') != 'idle'
+                        or len(self.data_buffer.get(d) or []) >= 2]
             if not auto_chs:
                 return
             # 全部通道 T3 完成
@@ -6303,9 +6342,12 @@ class DataCollectorApp(QMainWindow):
                     accuracy_ok = True
             except Exception as e:
                 print(f"[手动测试完成] accuracy保存失败: {e}")
-            # 4) 保存截图
+            # 4) 保存截图（必须在停止温度源输出与停止采集之前，保证截到实时数据）
             try:
+                QApplication.processEvents()
                 self._save_whole_window_screenshot('T3')
+                # 已截图，后续 stop_collection 不再重复截图
+                self._skip_next_stop_screenshot = True
             except Exception as e:
                 print(f"[手动测试完成] 截图失败: {e}")
             stability_on = self._stability_sheet_enabled()
@@ -6353,6 +6395,18 @@ class DataCollectorApp(QMainWindow):
             if st and st.get('phase') == 'complete' and st.get('T3') is not None:
                 t3_min = float(st['T3'])
                 break
+        # 回退1：取任意已完成通道中最晚的 T3（兼容仅部分通道勾选/完成的情况）
+        if t3_min is None:
+            t3_list = [float(s['T3']) for s in self.auto_test_state.values()
+                       if s.get('phase') == 'complete' and s.get('T3') is not None]
+            if t3_list:
+                t3_min = max(t3_list)
+        # 回退2：无任何通道完成 T3（如通道无数据/未稳定，完成条件始终未触发）时，
+        #        以当前采集时长作为窗口终点，保证 accuracy sheet 仍能记录最后一段数据，
+        #        避免整个 accuracy sheet 丢失
+        if t3_min is None and getattr(self, 'start_time', None):
+            t3_min = (time.time() - self.start_time) / 60.0
+            print(f"[accuracy] 无已完成 T3，回退使用当前时长 {t3_min:.2f}min 作为窗口终点")
         if t3_min is None:
             print("[accuracy] 未找到有效的 T3 时刻")
             return rows
@@ -6404,7 +6458,8 @@ class DataCollectorApp(QMainWindow):
         cols = ['No.', 'Max', 'Avg', 'Min']
         df = pd.DataFrame(accuracy_rows, columns=cols)
         # 先写入临时文件，然后用 load_workbook 合并到 full_path
-        tmp_path = full_path + '.accuracy.tmp'
+        # 注意：pandas/openpyxl 只接受 .xlsx 扩展名，不能用 .tmp（会抛 Invalid extension）
+        tmp_path = full_path + '.accuracy_tmp.xlsx'
         try:
             with pd.ExcelWriter(tmp_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='accuracy', index=False)
